@@ -55,7 +55,7 @@ export default function InventoryView({ products, setProducts }){
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {products.map(p=> (
             <div key={p.id} className="border rounded-xl overflow-hidden">
-              <img src={p.images?.[0]} alt={p.title} className="h-32 w-full object-cover"/>
+              <img src={p.images?.[0]} alt={p.title} loading="lazy" className="h-32 w-full object-cover"/>
               <div className="p-3 space-y-2">
                 <div className="text-sm font-medium line-clamp-1">{p.title}</div>
                 <div className="flex items-center gap-2">

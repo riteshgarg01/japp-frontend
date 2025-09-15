@@ -23,7 +23,10 @@ export default function ShopView({ products, onOrderCreate, ownerPhone }){
 
   useEffect(()=>localStorage.setItem("ac_shortlist", JSON.stringify(shortlist)), [shortlist]);
 
-  const cats = useMemo(()=>["All", ...Array.from(new Set(products.map(p=>p.category)))], [products]);
+  const cats = useMemo(()=>{
+    const set = new Set(products.map(p=> p.category));
+    return ["All", ...Array.from(set)];
+  }, [products]);
   const maxPrice = useMemo(()=>Math.max(5000, ...products.map(p=>p.price)), [products]);
   useEffect(()=>{ if (priceRange[1] < maxPrice) setPriceRange([0, maxPrice]); }, [maxPrice]);
 
@@ -80,8 +83,8 @@ export default function ShopView({ products, onOrderCreate, ownerPhone }){
             <div className="text-sm text-neutral-500">Shortlist ({shortlist.length})</div>
             <ShortlistSheet shortlist={shortlist} products={products} onRemove={(id)=>toggleShortlist(id)} />
             <div className="flex flex-col sm:flex-row gap-2">
-              <Input id="custPhoneSidebar" placeholder="Your WhatsApp (+91...)" />
-              <Button onClick={()=>{ const el=document.getElementById("custPhoneSidebar"); const v=/** @type {HTMLInputElement} */(el)?.value?.trim(); if(!v) return toast.error("Enter WhatsApp number"); sendOrder(v); }}>
+              <Input id="custPhoneSidebar" type="tel" inputMode="tel" placeholder="Your WhatsApp (+91...)" className="sm:w-auto w-full" />
+              <Button className="sm:w-auto w-full" onClick={()=>{ const el=document.getElementById("custPhoneSidebar"); const v=/** @type {HTMLInputElement} */(el)?.value?.trim(); if(!v) return toast.error("Enter WhatsApp number"); sendOrder(v); }}>
                 <Phone className="mr-2 h-4 w-4"/> Send Order
               </Button>
             </div>
@@ -100,7 +103,7 @@ export default function ShopView({ products, onOrderCreate, ownerPhone }){
               <Card className="shadow-sm overflow-hidden">
                 <div className="aspect-square bg-neutral-100">
                   {p.images?.[0] ? (
-                    <img src={p.images[0]} alt={p.title} className="h-full w-full object-cover" />
+                    <img src={p.images[0]} alt={p.title} loading="lazy" className="h-full w-full object-cover" />
                   ) : (
                     <div className="h-full w-full grid place-items-center text-neutral-400"><ImageIcon/></div>
                   )}
@@ -113,7 +116,7 @@ export default function ShopView({ products, onOrderCreate, ownerPhone }){
                   <Badge variant="outline">{p.category}</Badge>
                   <div className="font-semibold">{fmt(p.price)}</div>
                 </CardContent>
-                <CardFooter className="justify-between">
+                <CardFooter className="justify-between items-center">
                   <div className="text-xs text-neutral-500">{isAvailable ? `${p.qty} in stock` : "Not available"}</div>
                   <Button size="sm" disabled={!isAvailable} variant={isAvailable ? (shortlist.includes(p.id)?"secondary":"default") : "secondary"} onClick={()=>toggleShortlist(p.id)}>
                     <ShoppingCart className="mr-2 h-4 w-4"/>{shortlist.includes(p.id)?"Remove":"Shortlist"}

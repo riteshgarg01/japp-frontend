@@ -11,6 +11,12 @@ const toProductIn = (p) => ({
   images: p.images || [],
 });
 
+export async function getConfig(){
+  const r = await fetch(`${API_BASE}/config`);
+  if (!r.ok) throw new Error("load config failed");
+  return await r.json();
+}
+
 export async function listProducts(){
   const r = await fetch(`${API_BASE}/products`);
   if (!r.ok) throw new Error("load products failed");
@@ -24,7 +30,11 @@ export async function createProduct(p){
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify(toProductIn(p)),
   });
-  if (!r.ok) throw new Error("create product failed");
+  if (!r.ok) {
+    let msg = "create product failed";
+    try { msg = (await r.text()) || msg; } catch {}
+    throw new Error(msg);
+  }
   return await r.json();
 }
 
@@ -34,13 +44,21 @@ export async function updateProduct(p){
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify(toProductIn(p)),
   });
-  if (!r.ok) throw new Error("update product failed");
+  if (!r.ok) {
+    let msg = "update product failed";
+    try { msg = (await r.text()) || msg; } catch {}
+    throw new Error(msg);
+  }
   return await r.json();
 }
 
 export async function deleteProduct(id){
   const r = await fetch(`${API_BASE}/products/${encodeURIComponent(id)}`, { method: "DELETE" });
-  if (!r.ok) throw new Error("delete failed");
+  if (!r.ok) {
+    let msg = "delete failed";
+    try { msg = (await r.text()) || msg; } catch {}
+    throw new Error(msg);
+  }
 }
 
 export async function listOrders(){

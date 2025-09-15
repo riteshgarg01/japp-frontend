@@ -22,3 +22,34 @@ export function waLink(phone, text){
   const t = encodeURIComponent(text || "");
   return `https://wa.me/${p}?text=${t}`;
 }
+
+// Category helpers: convert backend taxonomy to concise UI label
+const CAT_MAP = new Map([
+  ["Apparel & Accessories > Jewelry > Earrings", "Earrings"],
+  ["Apparel & Accessories > Jewelry > Necklaces", "Necklace Sets"], // UI prefers "Necklace Sets"
+  ["Apparel & Accessories > Jewelry > Jewelry Sets", "Necklace Sets"],
+  ["Apparel & Accessories > Jewelry > Charms & Pendants", "Pendants"],
+  ["Apparel & Accessories > Jewelry > Rings", "Rings"],
+  ["Apparel & Accessories > Jewelry > Bangles", "Bangles"],
+  ["Apparel & Accessories > Jewelry > Bracelets", "Bracelets"],
+  ["Apparel & Accessories > Jewelry > Nose Pins", "Nose Pins"],
+  ["Apparel & Accessories > Jewelry > Anklets", "Anklets"],
+]);
+
+export function shortCategory(cat){
+  if (!cat) return "";
+  if (CAT_MAP.has(cat)) return CAT_MAP.get(cat);
+  const last = String(cat).split(">").pop()?.trim();
+  // Normalize some common variants
+  const norm = {
+    "Jewelry Sets":"Necklace Sets",
+    "Necklaces":"Necklace Sets",
+    "Charms & Pendants":"Pendants",
+  }[last] || last;
+  return norm;
+}
+
+export function mapToShopCategory(cat){
+  // Ensure category always maps to one used in SHOPIFY_CATEGORIES
+  return shortCategory(cat);
+}

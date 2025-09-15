@@ -23,6 +23,7 @@ It expects your existing **shadcn/ui** components under `@/components/ui/*` and 
    ```
 5) Backend env:
    - `VITE_API_URL=http://localhost:8000` (put in `.env.local`)
+   - Owner phone now comes from the backend `GET /config` (set `OWNER_PHONE` in `arohi-backend/.env`).
 
 Run:
 ```bash

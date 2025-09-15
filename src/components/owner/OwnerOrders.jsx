@@ -58,7 +58,7 @@ export default function OwnerOrders({ products, setProducts, orders, setOrders, 
                 <div className="font-medium">{o.id}</div>
                 <Badge variant="outline" className="text-green-700 border-green-200 bg-green-50">Confirmed</Badge>
               </div>
-              <div className="text-sm text-neutral-500">Customer: {o.customerPhone}</div>
+              <div className="text-sm text-neutral-500">Customer: {o.customer_phone}</div>
               <div className="mt-2 grid grid-cols-3 gap-2">
                 {o.items.map(id=>{
                   const p = products.find(pp=>pp.id===id);
