@@ -1,5 +1,8 @@
 import { API_BASE } from "./config.js";
 
+// Bypass ngrok's browser warning interstitial (ERR_NGROK_6024)
+const NGROK_HEADERS = API_BASE.includes("ngrok-free.app") ? { "ngrok-skip-browser-warning": "true" } : {};
+
 const toProductIn = (p) => ({
   id: p.id,
   title: p.title,
@@ -12,13 +15,13 @@ const toProductIn = (p) => ({
 });
 
 export async function getConfig(){
-  const r = await fetch(`${API_BASE}/config`);
+  const r = await fetch(`${API_BASE}/config`, { headers: { ...NGROK_HEADERS } });
   if (!r.ok) throw new Error("load config failed");
   return await r.json();
 }
 
 export async function listProducts(){
-  const r = await fetch(`${API_BASE}/products`);
+  const r = await fetch(`${API_BASE}/products`, { headers: { ...NGROK_HEADERS } });
   if (!r.ok) throw new Error("load products failed");
   const data = await r.json();
   return data.items || [];
@@ -27,7 +30,7 @@ export async function listProducts(){
 export async function createProduct(p){
   const r = await fetch(`${API_BASE}/products`, {
     method: "POST",
-    headers: {"Content-Type":"application/json"},
+    headers: {"Content-Type":"application/json", ...NGROK_HEADERS},
     body: JSON.stringify(toProductIn(p)),
   });
   if (!r.ok) {
@@ -41,7 +44,7 @@ export async function createProduct(p){
 export async function updateProduct(p){
   const r = await fetch(`${API_BASE}/products/${encodeURIComponent(p.id)}`, {
     method: "PATCH",
-    headers: {"Content-Type":"application/json"},
+    headers: {"Content-Type":"application/json", ...NGROK_HEADERS},
     body: JSON.stringify(toProductIn(p)),
   });
   if (!r.ok) {
@@ -53,7 +56,7 @@ export async function updateProduct(p){
 }
 
 export async function deleteProduct(id){
-  const r = await fetch(`${API_BASE}/products/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const r = await fetch(`${API_BASE}/products/${encodeURIComponent(id)}`, { method: "DELETE", headers: { ...NGROK_HEADERS } });
   if (!r.ok) {
     let msg = "delete failed";
     try { msg = (await r.text()) || msg; } catch {}
@@ -62,7 +65,7 @@ export async function deleteProduct(id){
 }
 
 export async function listOrders(){
-  const r = await fetch(`${API_BASE}/orders`);
+  const r = await fetch(`${API_BASE}/orders`, { headers: { ...NGROK_HEADERS } });
   if (!r.ok) throw new Error("load orders failed");
   const data = await r.json();
   return Array.isArray(data) ? data : (data.items || []);
@@ -71,7 +74,7 @@ export async function listOrders(){
 export async function createOrder(items, customerPhone){
   const r = await fetch(`${API_BASE}/orders`, {
     method: "POST",
-    headers: {"Content-Type":"application/json"},
+    headers: {"Content-Type":"application/json", ...NGROK_HEADERS},
     body: JSON.stringify({ items, customer_phone: customerPhone }),
   });
   if (!r.ok) throw new Error("create order failed");
@@ -79,7 +82,7 @@ export async function createOrder(items, customerPhone){
 }
 
 export async function confirmOrder(id){
-  const r = await fetch(`${API_BASE}/orders/${encodeURIComponent(id)}/confirm`, { method: "PATCH" });
+  const r = await fetch(`${API_BASE}/orders/${encodeURIComponent(id)}/confirm`, { method: "PATCH", headers: { ...NGROK_HEADERS } });
   if (!r.ok) throw new Error("confirm order failed");
   return await r.json();
 }

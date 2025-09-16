@@ -1,10 +1,12 @@
 import { API_BASE } from "./config.js";
 
+const NGROK_HEADERS = API_BASE.includes("ngrok-free.app") ? { "ngrok-skip-browser-warning": "true" } : {};
+
 export async function fetchAIMetadata(imageUrls = []){
   try{
     const res = await fetch(`${API_BASE}/ai/describe`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...NGROK_HEADERS },
       body: JSON.stringify({ image_urls: imageUrls }),
     });
     if (res.ok) return await res.json();
