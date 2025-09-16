@@ -27,6 +27,20 @@ export async function listProducts(){
   return data.items || [];
 }
 
+export async function listProductsPaged(params = {}){
+  // Support both absolute API base and proxied relative path
+  const u = API_BASE
+    ? new URL(`${API_BASE}/products`)
+    : new URL('/products', window.location.origin);
+  Object.entries(params).forEach(([k,v])=>{
+    if (v===undefined || v===null || v==='') return;
+    u.searchParams.set(k, String(v));
+  });
+  const r = await fetch(u.toString().replace(window.location.origin, ''), { headers: { ...NGROK_HEADERS } });
+  if (!r.ok) throw new Error("load products failed");
+  return await r.json(); // { items, total, next_offset }
+}
+
 export async function createProduct(p){
   const r = await fetch(`${API_BASE}/products`, {
     method: "POST",

@@ -11,4 +11,5 @@ export const SHOPIFY_CATEGORIES = [
   "Necklaces",
   "Rings",
 ];
-export const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const USE_PROXY = String(import.meta.env.VITE_USE_PROXY || "0") === "1";
+export const API_BASE = USE_PROXY ? "" : (import.meta.env.VITE_API_URL || "http://localhost:8000");

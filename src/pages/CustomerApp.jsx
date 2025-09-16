@@ -19,7 +19,7 @@ export default function CustomerApp(){
   useEffect(()=>{ getConfig().then(c=>setOwnerPhone(c.owner_phone||"")); }, []);
 
   return (
-    <div className="grid md:grid-cols-4 gap-6">
+    <div>
       <ShopView isLoading={loading} products={products} onOrderCreate={(o)=>setOrders(prev=>[o, ...prev])} ownerPhone={ownerPhone} />
     </div>
   );

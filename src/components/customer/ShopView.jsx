@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,11 +7,12 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { ShoppingCart, Filter, Phone, Image as ImageIcon, X } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME } from "../../shared";
-import ShortlistSheet from "./ShortlistSheet.jsx";
+import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged } from "../../shared";
+// ShortlistSheet not used in full-screen view anymore
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 export default function ShopView({ products, onOrderCreate, ownerPhone, isLoading }){
@@ -24,21 +25,92 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const [filterOpen, setFilterOpen] = useState(false);
   const [shortlistOpen, setShortlistOpen] = useState(false);
   const [custPhoneMobile, setCustPhoneMobile] = useState("");
+  const [hideUnavailable, setHideUnavailable] = useState(false);
+  const [displayCount, setDisplayCount] = useState(10);
+  const loadStep = 20;
 
   useEffect(()=>localStorage.setItem("ac_shortlist", JSON.stringify(shortlist)), [shortlist]);
 
+  const [catalog, setCatalog] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [nextOffset, setNextOffset] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const fetchedOffsetsRef = useRef(new Set());
+
   const cats = useMemo(()=>{
-    const set = new Set(products.map(p=> p.category));
+    const set = new Set(catalog.map(p=> p.category));
     return ["All", ...Array.from(set)];
-  }, [products]);
-  const maxPrice = useMemo(()=>Math.max(5000, ...products.map(p=>p.price)), [products]);
+  }, [catalog]);
+  const maxPrice = useMemo(()=>Math.max(5000, ...catalog.map(p=>p.price)), [catalog]);
   useEffect(()=>{ if (priceRange[1] < maxPrice) setPriceRange([0, maxPrice]); }, [maxPrice]);
 
-  const filtered = products.filter(p => (
-    (cat === "All" || p.category === cat) &&
-    p.price >= priceRange[0] && p.price <= priceRange[1] &&
-    (q.trim()==="" || p.title.toLowerCase().includes(q.toLowerCase()) || p.description.toLowerCase().includes(q.toLowerCase()))
-  ));
+  const filtered = catalog.filter(p => {
+    const isAvailable = (p.available && (p.qty||0) > 0);
+    return (
+      (cat === "All" || p.category === cat) &&
+      (!hideUnavailable || isAvailable) &&
+      p.price >= priceRange[0] && p.price <= priceRange[1] &&
+      (q.trim()==="" || p.title.toLowerCase().includes(q.toLowerCase()) || p.description.toLowerCase().includes(q.toLowerCase()))
+    );
+  });
+
+  // Reset lazy display and server pagination when filters/search change
+  useEffect(()=>{
+    setDisplayCount(10);
+    setCatalog([]);
+    setTotal(0);
+    setNextOffset(0);
+  }, [cat, priceRange, q, hideUnavailable]);
+
+  // Fetch page function
+  async function fetchPage(limit, offset){
+    if (loadingMore || fetchedOffsetsRef.current.has(offset)) return;
+    if (offset === 0) setLoading(true); else setLoadingMore(true);
+    fetchedOffsetsRef.current.add(offset);
+    const params = {
+      limit, offset,
+      category: cat === 'All' ? undefined : cat,
+      q: q.trim() || undefined,
+      min_price: priceRange[0] || 0,
+      max_price: priceRange[1] || undefined,
+      only_available: hideUnavailable || undefined,
+    };
+    const data = await listProductsPaged(params);
+    setCatalog(prev=>{
+      const map = new Map(prev.map(p=>[p.id,p]));
+      for (const it of (data.items||[])) map.set(it.id, it);
+      return Array.from(map.values());
+    });
+    setTotal(data.total || 0);
+    setNextOffset(data.next_offset ?? null);
+    setLoading(false);
+    setLoadingMore(false);
+  }
+
+  // Infinite scroll via IntersectionObserver
+  const [sentinelRef, setSentinelRef] = useState(null);
+  useEffect(()=>{
+    if (!sentinelRef) return;
+    const io = new IntersectionObserver((entries)=>{
+      const [entry] = entries;
+      if (entry.isIntersecting){
+        if (nextOffset != null) {
+          fetchPage(loadStep, nextOffset).catch(()=>{});
+        } else {
+          setDisplayCount((n)=> Math.min(filtered.length, n + loadStep));
+        }
+      }
+    }, { rootMargin: '300px' });
+    io.observe(sentinelRef);
+    return ()=> io.disconnect();
+  }, [sentinelRef, nextOffset, filtered.length]);
+
+  // Initial page load and on filter changes
+  useEffect(()=>{
+    fetchedOffsetsRef.current.clear();
+    fetchPage(10, 0).catch(()=>{});
+  }, [cat, priceRange[0], priceRange[1], q, hideUnavailable]);
 
   function toggleShortlist(id){ setShortlist(sl => sl.includes(id) ? sl.filter(x=>x!==id) : [...sl, id]); }
 
@@ -88,7 +160,7 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
       </div>
 
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {isLoading && (
+        {loading && catalog.length===0 && (
           <>
             {Array.from({length:6}).map((_,i)=> (
               <div key={i} className="border rounded-xl overflow-hidden animate-pulse">
@@ -103,10 +175,10 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
             ))}
           </>
         )}
-        {!isLoading && filtered.length===0 && (
+        {!loading && filtered.length===0 && (
           <div className="col-span-full text-center text-neutral-500 py-12">No products match your filters.</div>
         )}
-        {!isLoading && filtered.map((p) => {
+        {!loading && filtered.slice(0, displayCount).map((p) => {
           const isAvailable = (p.available && (p.qty||0) > 0);
           return (
             <motion.div key={p.id} initial={{opacity:0, y:8}} animate={{opacity:1, y:0}}>
@@ -163,6 +235,10 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
                 <div className="text-sm text-neutral-600 mt-2">{fmt(priceRange[0])} – {fmt(priceRange[1])}</div>
               </div>
             </div>
+            <div className="flex items-center justify-between">
+              <Label>Hide unavailable</Label>
+              <Switch checked={hideUnavailable} onCheckedChange={setHideUnavailable} />
+            </div>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" onClick={()=>setFilterOpen(false)}>Close</Button>
               <Button onClick={()=>setFilterOpen(false)}>Apply</Button>
@@ -170,6 +246,9 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Sentinel for infinite scroll (always present) */}
+      <div ref={setSentinelRef} className="h-10" />
 
       {/* Shortlist full-screen panel */}
       <Dialog open={shortlistOpen} onOpenChange={setShortlistOpen}>
@@ -202,8 +281,8 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
                 <div className="text-sm text-neutral-500">Your shortlist is empty.</div>
               )}
               <div className="space-y-3">
-                {shortlist.map(id=>{
-                  const p = products.find(pp=>pp.id===id);
+              {shortlist.map(id=>{
+                  const p = catalog.find(pp=>pp.id===id);
                   if (!p) return null;
                   return (
                     <div key={id} className="flex items-center gap-3 border rounded-xl p-2">
@@ -221,7 +300,7 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
             <div className="p-4 border-t bg-white">
               <div className="flex items-center justify-between text-sm">
                 <div className="text-neutral-500">Total</div>
-                <div className="font-semibold">{fmt(shortlist.reduce((sum,id)=>{ const p = products.find(pp=>pp.id===id); return sum + (p?.price||0); },0))}</div>
+                <div className="font-semibold">{fmt(shortlist.reduce((sum,id)=>{ const p = catalog.find(pp=>pp.id===id); return sum + (p?.price||0); },0))}</div>
               </div>
             </div>
           </div>
