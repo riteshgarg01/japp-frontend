@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { listProducts as apiListProducts, listOrders as apiListOrders } from "../shared";
 import UploadView from "../components/owner/UploadView.jsx";
-import OwnerOrders from "../components/owner/OwnerOrders.jsx";
 import InventoryView from "../components/owner/InventoryView.jsx";
+import OwnerShortlists from "../components/owner/Shortlists.jsx";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 
 export default function OwnerApp(){
   const [products, setProducts] = useState([]);
@@ -12,11 +13,28 @@ export default function OwnerApp(){
   useEffect(()=>{ apiListProducts().then(setProducts).catch(()=>toast.error("Failed to load products")); }, []);
   useEffect(()=>{ apiListOrders().then(setOrders).catch(()=>{}); }, []);
 
+  const inventoryCount = useMemo(()=>products.reduce((s,p)=>s + (Number(p.qty)||0), 0), [products]);
+  const pendingCount = useMemo(()=>orders.filter(o=>o.status==='pending').length, [orders]);
+
   return (
-    <div className="space-y-6">
-      <UploadView onAddProduct={(p)=>setProducts([p, ...products])} />
-      <OwnerOrders products={products} setProducts={setProducts} orders={orders} setOrders={setOrders} />
-      <InventoryView products={products} setProducts={setProducts} />
-    </div>
+    <Tabs defaultValue="upload" className="w-full">
+      <TabsList className="grid grid-cols-3 w-full sticky top-0 z-10 bg-white">
+        <TabsTrigger value="upload">Upload</TabsTrigger>
+        <TabsTrigger value="inventory">Inventory ({inventoryCount})</TabsTrigger>
+        <TabsTrigger value="shortlists">Shortlists ({pendingCount})</TabsTrigger>
+      </TabsList>
+
+      <TabsContent value="upload" className="mt-4">
+        <UploadView onAddProduct={(p)=>setProducts([p, ...products])} />
+      </TabsContent>
+
+      <TabsContent value="inventory" className="mt-4">
+        <InventoryView products={products} setProducts={setProducts} />
+      </TabsContent>
+
+      <TabsContent value="shortlists" className="mt-4">
+        <OwnerShortlists products={products} orders={orders} setOrders={setOrders} setProducts={setProducts} />
+      </TabsContent>
+    </Tabs>
   );
 }

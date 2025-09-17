@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -8,12 +8,20 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { updateProduct as apiUpdateProduct, deleteProduct as apiDeleteProduct, fmt } from "../../shared";
+import { updateProduct as apiUpdateProduct, deleteProduct as apiDeleteProduct, fmt, listOwnerProductsPaged } from "../../shared";
 import UploadView from "./UploadView.jsx";
 
 export default function InventoryView({ products, setProducts }){
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [q, setQ] = useState("");
+  const [displayCount, setDisplayCount] = useState(12);
+  const loadStep = 24;
+  const [sentinel, setSentinel] = useState(null);
+  const [nextOffset, setNextOffset] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const fetchedOffsets = useState(new Set())[0];
 
   async function toggleAvailability(id){
     let target = products.find(p=>p.id===id);
@@ -45,17 +53,53 @@ export default function InventoryView({ products, setProducts }){
   function openEdit(p){ setEditing(p); setEditOpen(true); }
   function saveEdit(updated){ setProducts(products.map(p=> p.id===updated.id ? updated : p)); setEditOpen(false); setEditing(null); }
 
+  async function fetchPage(limit, offset){
+    if (loadingMore || fetchedOffsets.has(offset)) return;
+    if (offset===0) setLoading(true); else setLoadingMore(true);
+    fetchedOffsets.add(offset);
+    try{
+      const data = await listOwnerProductsPaged({ limit, offset });
+      setProducts(prev=>{
+        const map = new Map(prev.map(p=>[p.id,p]));
+        for (const it of (data.items||[])) map.set(it.id, it);
+        return Array.from(map.values());
+      });
+      setNextOffset(data.next_offset ?? null);
+    } finally {
+      setLoading(false); setLoadingMore(false);
+    }
+  }
+
+  useEffect(()=>{
+    if (!sentinel) return;
+    const io = new IntersectionObserver((entries)=>{
+      const [entry] = entries;
+      if (entry.isIntersecting){
+        if (nextOffset != null) fetchPage(loadStep, nextOffset);
+        else setDisplayCount((n)=> Math.min(products.length, n + loadStep));
+      }
+    }, { rootMargin: '300px' });
+    io.observe(sentinel);
+    return ()=> io.disconnect();
+  }, [sentinel, products.length, nextOffset]);
+
+  useEffect(()=>{ fetchPage(12, 0); }, []);
+
   return (
     <Card className="shadow-sm">
-      <CardHeader>
-        <CardTitle>Inventory</CardTitle>
-        <CardDescription>Add/remove items and update stock. Editing opens the Upload form.</CardDescription>
-      </CardHeader>
+      <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b px-3 py-2">
+        <div className="flex items-center gap-2">
+          <Input value={q} onChange={(e)=>setQ(e.target.value)} placeholder="Search by title, description, or ID" className="flex-1 text-base" />
+        </div>
+      </div>
       <CardContent>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {products.map(p=> (
+          {products.filter(p=>{
+            const text = `${p.id} ${p.title} ${p.description}`.toLowerCase();
+            return text.includes(q.toLowerCase());
+          }).slice(0, displayCount).map(p=> (
             <div key={p.id} className="border rounded-xl overflow-hidden">
-              <img src={p.images?.[0]} alt={p.title} loading="lazy" className="h-32 w-full object-cover"/>
+              <img src={p.images?.[0]} alt={p.title} loading="lazy" className="h-48 w-full object-cover"/>
               <div className="p-3 space-y-2">
                 <div className="text-sm font-medium line-clamp-1">{p.title}</div>
                 <div className="flex items-center gap-2">
@@ -83,13 +127,15 @@ export default function InventoryView({ products, setProducts }){
             </div>
           ))}
         </div>
+        <div ref={setSentinel} className="h-10" />
+        {loadingMore && <div className="text-center text-xs text-neutral-500 py-2">Loading more…</div>}
       </CardContent>
 
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader><DialogTitle>Edit Product</DialogTitle></DialogHeader>
+        <DialogContent className="p-0 max-w-none w-[100vw] h-dvh overflow-y-auto">
+          <DialogHeader><DialogTitle>{editing ? `Edit Product — ${editing.id}` : 'Edit Product'}</DialogTitle></DialogHeader>
           {editing && (
-            <UploadView editing existing={editing} onSaveEdit={saveEdit} />
+            <UploadView editing existing={editing} onSaveEdit={saveEdit} onCancel={()=>setEditOpen(false)} />
           )}
         </DialogContent>
       </Dialog>

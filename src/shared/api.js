@@ -9,6 +9,7 @@ const toProductIn = (p) => ({
   description: p.description,
   category: p.category,
   price: Math.round(Number(p.price)||0),
+  cost: Math.max(0, Math.floor(Number(p.cost||0))),
   qty: Math.max(0, Math.floor(Number(p.qty)||0)),
   available: !!p.available,
   images: p.images || [],
@@ -39,6 +40,46 @@ export async function listProductsPaged(params = {}){
   const r = await fetch(u.toString().replace(window.location.origin, ''), { headers: { ...NGROK_HEADERS } });
   if (!r.ok) throw new Error("load products failed");
   return await r.json(); // { items, total, next_offset }
+}
+
+export async function listOwnerProductsPaged(params = {}){
+  const u = API_BASE
+    ? new URL(`${API_BASE}/owner/products`)
+    : new URL('/owner/products', window.location.origin);
+  Object.entries(params).forEach(([k,v])=>{ if(v!==undefined&&v!==null&&v!=='') u.searchParams.set(k,String(v)); });
+  const r = await fetch(u.toString().replace(window.location.origin, ''), { headers: { ...NGROK_HEADERS } });
+  if (!r.ok) throw new Error("load owner products failed");
+  return await r.json();
+}
+
+export async function listOrdersPaged(params = {}){
+  const u = API_BASE
+    ? new URL(`${API_BASE}/orders`)
+    : new URL('/orders', window.location.origin);
+  Object.entries(params).forEach(([k,v])=>{ if(v!==undefined&&v!==null&&v!=='') u.searchParams.set(k,String(v)); });
+  const r = await fetch(u.toString().replace(window.location.origin, ''), { headers: { ...NGROK_HEADERS } });
+  if (!r.ok) throw new Error("load orders failed");
+  return await r.json();
+}
+
+export async function removeItemFromOrder(orderId, productId){
+  const r = await fetch(`${API_BASE || ''}/orders/${encodeURIComponent(orderId)}/remove_item`.replace(window.location.origin,''), {
+    method: 'PATCH',
+    headers: { 'Content-Type':'application/json', ...NGROK_HEADERS },
+    body: JSON.stringify({ pid: productId })
+  });
+  if (!r.ok) throw new Error('remove item failed');
+  return await r.json();
+}
+
+export async function addItemToOrder(orderId, productId){
+  const r = await fetch(`${API_BASE || ''}/orders/${encodeURIComponent(orderId)}/add_item`.replace(window.location.origin,''), {
+    method: 'PATCH',
+    headers: { 'Content-Type':'application/json', ...NGROK_HEADERS },
+    body: JSON.stringify({ pid: productId })
+  });
+  if (!r.ok) throw new Error('add item failed');
+  return await r.json();
 }
 
 export async function createProduct(p){

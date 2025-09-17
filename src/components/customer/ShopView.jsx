@@ -272,7 +272,9 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
                   placeholder="Your WhatsApp (+91...)"
                   className="text-base"
                 />
-                <Button className="shrink-0" onClick={()=>{ const v=(custPhoneMobile||"").trim(); if(!v) return toast.error("Enter WhatsApp number"); sendOrder(v); }}>Send Order Request</Button>
+                <Button className="shrink-0 flex items-center justify-center gap-2" onClick={()=>{ const v=(custPhoneMobile||"").trim(); if(!v) return toast.error("Enter WhatsApp number"); sendOrder(v); }}>
+                  <Phone className="h-4 w-4"/>Send Order
+                </Button>
               </div>
             </div>
             <div className="flex-1 overflow-auto p-4">
