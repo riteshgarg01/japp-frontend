@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { ShoppingCart, Filter, Phone, Image as ImageIcon, X } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged } from "../../shared";
+import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged, getProductImages } from "../../shared";
 // ShortlistSheet not used in full-screen view anymore
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -28,6 +28,11 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const [hideUnavailable, setHideUnavailable] = useState(false);
   const [displayCount, setDisplayCount] = useState(10);
   const loadStep = 20;
+  const [preview, setPreview] = useState(null); // { product, index }
+  const [imgIndexById, setImgIndexById] = useState({});
+  const [imagesById, setImagesById] = useState({});
+  const [descExpanded, setDescExpanded] = useState(new Set());
+  const touchRef = useRef({ startX: 0, startY: 0, t: 0 });
 
   useEffect(()=>localStorage.setItem("ac_shortlist", JSON.stringify(shortlist)), [shortlist]);
 
@@ -113,6 +118,16 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   }, [cat, priceRange[0], priceRange[1], q, hideUnavailable]);
 
   function toggleShortlist(id){ setShortlist(sl => sl.includes(id) ? sl.filter(x=>x!==id) : [...sl, id]); }
+  function isInCart(id){ return shortlist.includes(id); }
+
+  async function ensureImages(p){
+    if ((imagesById[p.id]?.length||0) > 1) return imagesById[p.id];
+    try{
+      const { images } = await getProductImages(p.id);
+      setImagesById(prev=>({ ...prev, [p.id]: images }));
+      return images;
+    }catch{ return imagesById[p.id] || p.images || []; }
+  }
 
   async function sendOrder(phone){
     if (!shortlist.length) return toast.error("Shortlist is empty");
@@ -162,9 +177,10 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {loading && catalog.length===0 && (
           <>
+            <div className="col-span-full text-center text-sm text-neutral-600 mb-2">Loading catalog…</div>
             {Array.from({length:6}).map((_,i)=> (
               <div key={i} className="border rounded-xl overflow-hidden animate-pulse">
-                <div className="aspect-square bg-neutral-100"/>
+                <div className="h-72 bg-neutral-100"/>
                 <div className="p-3 space-y-2">
                   <div className="h-4 bg-neutral-100 rounded w-3/4"/>
                   <div className="h-3 bg-neutral-100 rounded w-full"/>
@@ -183,27 +199,54 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
           return (
             <motion.div key={p.id} initial={{opacity:0, y:8}} animate={{opacity:1, y:0}}>
               <Card className="shadow-sm overflow-hidden">
-                <div className="aspect-square bg-neutral-100">
-                  {p.images?.[0] ? (
-                    <img src={p.images[0]} alt={p.title} loading="lazy" className="h-full w-full object-cover" />
+                <div className="h-72 bg-neutral-100 relative">
+                  {(imagesById[p.id]?.[0] || p.images?.[0]) ? (
+                    <>
+                      <img src={(imagesById[p.id] || p.images)[imgIndexById[p.id]||0] || (imagesById[p.id] || p.images)[0]} alt={p.title} loading="lazy" decoding="async" sizes="(max-width: 640px) 100vw, 33vw" className="h-full w-full object-contain" onClick={async()=>{
+                        if (!imagesById[p.id]) await ensureImages(p);
+                        setPreview({ product: p, index: imgIndexById[p.id]||0 });
+                      }} />
+                      {((imagesById[p.id] || p.images)?.length>1) && (
+                        <>
+                          <button className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/70 hover:bg-white/90 rounded-full w-8 h-8 grid place-items-center" onClick={async (e)=>{ e.stopPropagation(); const imgs = (imagesById[p.id] || await ensureImages(p)); setImgIndexById(s=>({ ...s, [p.id]: ((s[p.id]||0) - 1 + imgs.length) % imgs.length })); }}>‹</button>
+                          <button className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/70 hover:bg-white/90 rounded-full w-8 h-8 grid place-items-center" onClick={async (e)=>{ e.stopPropagation(); const imgs = (imagesById[p.id] || await ensureImages(p)); setImgIndexById(s=>({ ...s, [p.id]: ((s[p.id]||0) + 1) % imgs.length })); }}>›</button>
+                        </>
+                      )}
+                    </>
                   ) : (
                     <div className="h-full w-full grid place-items-center text-neutral-400"><ImageIcon/></div>
                   )}
                 </div>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base line-clamp-1">{p.title}</CardTitle>
-                  <CardDescription className="line-clamp-2">{p.description}</CardDescription>
+                  {descExpanded.has(p.id) ? (
+                    <CardDescription>{p.description}</CardDescription>
+                  ) : (
+                    <CardDescription>
+                      {(() => {
+                        const text = p.description || '';
+                        const max = 120; // approx two lines on mobile
+                        if (text.length <= max) return text;
+                        const cut = text.slice(0, max);
+                        const lastSpace = cut.lastIndexOf(' ');
+                        const head = cut.slice(0, lastSpace > 60 ? lastSpace : max);
+                        return (
+                          <>
+                            {head}…{' '}
+                            <button className="text-blue-600 text-xs" onClick={()=>{ const s=new Set(Array.from(descExpanded)); s.add(p.id); setDescExpanded(s); }}>See more</button>
+                          </>
+                        );
+                      })()}
+                    </CardDescription>
+                  )}
                 </CardHeader>
                 <CardContent className="flex items-center justify-between py-2">
                   <Badge variant="outline">{p.category}</Badge>
                   <div className="font-semibold">{fmt(p.price)}</div>
                 </CardContent>
                 <CardFooter className="block">
-                  <div className="flex items-center justify-between mb-2 text-xs text-neutral-500">
-                    <div>{isAvailable ? `${p.qty} in stock` : "Not available"}</div>
-                  </div>
-                  <Button className="w-full flex items-center justify-center gap-2" size="sm" disabled={!isAvailable} variant={isAvailable ? (shortlist.includes(p.id)?"secondary":"default") : "secondary"} onClick={()=>toggleShortlist(p.id)}>
-                    <ShoppingCart className="h-4 w-4"/> <span>{shortlist.includes(p.id)?"Remove":"Shortlist"}</span>
+                  <Button className="w-full flex items-center justify-center gap-2" size="sm" disabled={!isAvailable} variant={isAvailable ? (isInCart(p.id)?"secondary":"default") : "secondary"} onClick={()=>toggleShortlist(p.id)}>
+                    <ShoppingCart className="h-4 w-4"/> <span>{isAvailable ? (isInCart(p.id)?"Remove":"Add to Cart") : "Not available"}</span>
                   </Button>
                 </CardFooter>
               </Card>
@@ -306,6 +349,40 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
               </div>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Product full-screen preview with carousel */}
+      <Dialog open={!!preview} onOpenChange={()=>setPreview(null)}>
+        <DialogContent className="p-0 max-w-none w-[100vw] h-dvh">
+          {preview && (
+            <div className="relative w-full h-full bg-black text-white flex flex-col overflow-hidden">
+              <button className="absolute top-3 right-3 z-20 bg-white/10 hover:bg-white/20 rounded-full p-2" onClick={()=>setPreview(null)} aria-label="Close">
+                <X className="h-5 w-5"/>
+              </button>
+              <div className="grid place-items-center relative h-[calc(100vh-96px)]"
+                   onTouchStart={(e)=>{ const t=e.touches[0]; touchRef.current={ startX:t.clientX, startY:t.clientY, t:Date.now() }; }}
+                   onTouchEnd={(e)=>{ const dx=(e.changedTouches[0].clientX - touchRef.current.startX); const dy=(e.changedTouches[0].clientY - touchRef.current.startY); const dt=Date.now()-touchRef.current.t; if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) && dt<800 && preview.product.images?.length>1){ setPreview(p=>({ ...p, index: (p.index + (dx<0?1:-1) + preview.product.images.length) % preview.product.images.length })); } }}>
+                {/* Arrows */}
+                {(imagesById[preview.product.id]?.length || preview.product.images?.length)>1 && (
+                  <>
+                    <button className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 rounded-full p-2" onClick={()=>setPreview(p=>{ const imgs=(imagesById[p.product.id]||p.product.images)||[]; const len=imgs.length||1; return { ...p, index: (p.index - 1 + len) % len }; })}>
+                      ‹
+                    </button>
+                    <button className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/10 hover:bg-white/20 rounded-full p-2" onClick={()=>setPreview(p=>{ const imgs=(imagesById[p.product.id]||p.product.images)||[]; const len=imgs.length||1; return { ...p, index: (p.index + 1) % len }; })}>
+                      ›
+                    </button>
+                  </>
+                )}
+                <img src={(imagesById[preview.product.id] || preview.product.images)?.[preview.index] || (imagesById[preview.product.id] || preview.product.images)?.[0]} alt={preview.product.title} loading="lazy" decoding="async" className="max-h-full max-w-full object-contain" />
+              </div>
+              <div className="p-3 bg-black/90 sticky bottom-0">
+                <Button className="w-full flex items-center justify-center gap-2" size="lg" disabled={!((preview.product.available)&&((preview.product.qty||0)>0))} variant={isInCart(preview.product.id)?"secondary":"default"} onClick={()=>toggleShortlist(preview.product.id)}>
+                  <ShoppingCart className="h-5 w-5"/> <span>{((preview.product.available)&&((preview.product.qty||0)>0)) ? (isInCart(preview.product.id)?"Remove":"Add to Cart") : "Not available"}</span>
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </>

@@ -1,11 +1,11 @@
-import { useRef, useState, useMemo } from "react";
+import { useRef, useState, useMemo, useEffect } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { Image as ImageIcon, Plus, Sparkles } from "lucide-react";
+import { Image as ImageIcon, Plus, Sparkles, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { SHOPIFY_CATEGORIES, makeProductId, b64FromFile, fetchAIMetadata, createProduct as apiCreateProduct, updateProduct as apiUpdateProduct } from "../../shared";
 
@@ -18,8 +18,38 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
   const [cost, setCost] = useState(existing?.cost || 0);
   const [qty, setQty] = useState(existing?.qty ?? 1);
   const [aiLoading, setAiLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [showDesc, setShowDesc] = useState(editing ? false : true);
+  // Persist draft for non-editing flow so progress survives reloads
+  const DRAFT_KEY = 'upload_draft_v1';
+  // Load draft once for new upload
+  useEffect(()=>{
+    if (editing) return;
+    try{
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      if (d){
+        setImages(d.images||[]);
+        setCategory(d.category||SHOPIFY_CATEGORIES[0]);
+        setTitle(d.title||'');
+        setDescription(d.description||'');
+        setPrice(d.price||0);
+        setCost(d.cost||0);
+        setQty(d.qty??1);
+      }
+    }catch{}
+  }, []);
+  // Save draft on change (throttled by React batching)
+  useEffect(()=>{
+    if (editing) return;
+    try{
+      const d = { images, category, title, description, price, cost, qty };
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
+    }catch{}
+  }, [editing, images, category, title, description, price, cost, qty]);
+  function clearDraft(){ try{ localStorage.removeItem(DRAFT_KEY); }catch{} }
   const errors = useMemo(()=>{
     const errs = {};
     if (!images.length) errs.images = "Please add at least one image.";
@@ -42,7 +72,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
     setImages(prev=>[...prev, ...b64s]);
     try{
       setAiLoading(true);
-      const meta = await fetchAIMetadata(b64s);
+      const meta = await fetchAIMetadata(b64s.length ? [b64s[0]] : []);
       setCategory(meta.category);
       setTitle(meta.title);
       setDescription(meta.description);
@@ -50,6 +80,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
   }
 
   async function save(){
+    if (saving) return; // prevent double submits
     setSubmitted(true);
     if (Object.keys(errors).length > 0){
       return toast.error("Please fix the highlighted fields.");
@@ -67,6 +98,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
       createdAt: existing?.createdAt || Date.now(),
     };
     try{
+      setSaving(true);
       if (editing) {
         const updated = await apiUpdateProduct(base);
         onSaveEdit?.(updated);
@@ -76,8 +108,9 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
         onAddProduct(created);
         toast.success("Product added to catalog");
       }
-      if (!editing){ setImages([]); setTitle(""); setDescription(""); setPrice(0); setCost(0); setQty(1); setCategory(""); setSubmitted(false); }
+      if (!editing){ setImages([]); setTitle(""); setDescription(""); setPrice(0); setCost(0); setQty(1); setCategory(""); setSubmitted(false); clearDraft(); }
   }catch(e){ console.error(e); toast.error(e?.message || "Save failed"); }
+  finally { setSaving(false); }
   }
 
   return (
@@ -122,11 +155,18 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
           </div>
         </div>
         <div className="space-y-4">
+          {/* draft indicator removed per feedback */}
+          {aiLoading && (
+            <div className="flex items-center gap-2 text-purple-700 bg-purple-50 border border-purple-200 px-3 py-2 rounded">
+              <Loader2 className="h-4 w-4 animate-spin"/>
+              <div className="text-sm">AI is filling details…</div>
+            </div>
+          )}
           {/* Category & Qty right below camera box */}
-          <div>
+          <div className={aiLoading ? 'opacity-60 pointer-events-none' : ''}>
             <Label>Category & Qty</Label>
             <div className="grid grid-cols-2 gap-2">
-              <Select value={category} onValueChange={setCategory}>
+              <Select value={category} onValueChange={setCategory} disabled={aiLoading}>
                 <SelectTrigger><SelectValue placeholder="Category" /></SelectTrigger>
                 <SelectContent>{SHOPIFY_CATEGORIES.map((c)=> <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
               </Select>
@@ -136,7 +176,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
           </div>
 
           {/* Title */}
-          <div>
+          <div className={aiLoading ? 'opacity-60 pointer-events-none' : ''}>
             <Label>Title (10–12 words)</Label>
             <Input value={title} onChange={(e)=>setTitle(e.target.value)} placeholder="Elegant kundan earrings for festive wear" disabled={aiLoading} className={submitted && errors.title ? "border-red-300" : ""} />
             {submitted && errors.title && (
@@ -145,7 +185,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
           </div>
 
           {/* Description: hidden when editing unless expanded */}
-          <div>
+          <div className={aiLoading ? 'opacity-60 pointer-events-none' : ''}>
             <div className="flex items-center justify-between">
               <Label>Description (≤300 chars)</Label>
               {editing && (
@@ -182,17 +222,17 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
       <CardFooter className="justify-end gap-2">
         {!editing && (
           <div className="w-full flex gap-2">
-            <Button variant="outline" className="w-1/4" onClick={()=>{ setImages([]); setTitle(""); setDescription(""); setPrice(0); setCost(0); setQty(1); setCategory(""); setSubmitted(false); }} disabled={aiLoading}>Cancel</Button>
-            <Button className="w-3/4 flex items-center justify-center gap-2" onClick={save} disabled={aiLoading}>
-              <Plus className="h-4 w-4"/>{editing?"Save Changes":"Save to Catalog"}
+            <Button variant="outline" className="w-1/4" onClick={()=>{ setImages([]); setTitle(""); setDescription(""); setPrice(0); setCost(0); setQty(1); setCategory(""); setSubmitted(false); clearDraft(); }} disabled={aiLoading}>Cancel</Button>
+            <Button className="w-3/4 flex items-center justify-center gap-2" onClick={save} disabled={aiLoading || saving}>
+              {saving ? (<><Loader2 className="h-4 w-4 animate-spin"/>Saving…</>) : (<><Plus className="h-4 w-4"/>{editing?"Save Changes":"Save to Catalog"}</>)}
             </Button>
           </div>
         )}
         {editing && (
           <div className="w-full flex gap-2">
-            <Button variant="outline" className="w-1/4" onClick={()=> onCancel?.()} disabled={aiLoading}>Cancel</Button>
-            <Button className="w-3/4 flex items-center justify-center gap-2" onClick={save} disabled={aiLoading}>
-              <Plus className="h-4 w-4"/>Save Changes
+            <Button variant="outline" className="w-1/4" onClick={()=> onCancel?.()} disabled={aiLoading || saving}>Cancel</Button>
+            <Button className="w-3/4 flex items-center justify-center gap-2" onClick={save} disabled={aiLoading || saving}>
+              {saving ? (<><Loader2 className="h-4 w-4 animate-spin"/>Saving…</>) : (<><Plus className="h-4 w-4"/>Save Changes</>)}
             </Button>
           </div>
         )}

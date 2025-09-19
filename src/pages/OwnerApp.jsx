@@ -9,9 +9,17 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 export default function OwnerApp(){
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [ordersLoading, setOrdersLoading] = useState(true);
 
-  useEffect(()=>{ apiListProducts().then(setProducts).catch(()=>toast.error("Failed to load products")); }, []);
-  useEffect(()=>{ apiListOrders().then(setOrders).catch(()=>{}); }, []);
+  useEffect(()=>{
+    setProductsLoading(true);
+    apiListProducts().then(setProducts).catch(()=>toast.error("Failed to load products")).finally(()=>setProductsLoading(false));
+  }, []);
+  useEffect(()=>{
+    setOrdersLoading(true);
+    apiListOrders().then(setOrders).catch(()=>{}).finally(()=>setOrdersLoading(false));
+  }, []);
 
   const inventoryCount = useMemo(()=>products.reduce((s,p)=>s + (Number(p.qty)||0), 0), [products]);
   const pendingCount = useMemo(()=>orders.filter(o=>o.status==='pending').length, [orders]);
@@ -20,8 +28,8 @@ export default function OwnerApp(){
     <Tabs defaultValue="upload" className="w-full">
       <TabsList className="grid grid-cols-3 w-full sticky top-0 z-10 bg-white">
         <TabsTrigger value="upload">Upload</TabsTrigger>
-        <TabsTrigger value="inventory">Inventory ({inventoryCount})</TabsTrigger>
-        <TabsTrigger value="shortlists">Shortlists ({pendingCount})</TabsTrigger>
+        <TabsTrigger value="inventory">Inventory ({productsLoading ? '…' : inventoryCount})</TabsTrigger>
+        <TabsTrigger value="shortlists">Shortlists ({ordersLoading ? '…' : pendingCount})</TabsTrigger>
       </TabsList>
 
       <TabsContent value="upload" className="mt-4">

@@ -7,7 +7,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Eye, MessageCircle, CheckCircle2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { confirmOrder as apiConfirmOrder, listOrdersPaged, removeItemFromOrder, addItemToOrder } from "../../shared";
-import { formatDateTime } from "../../shared";
+import { formatDateTime, waLink } from "../../shared";
 
 export default function OwnerShortlists({ products, orders, setOrders, setProducts }){
   const [q, setQ] = useState("");
@@ -16,15 +16,17 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
   const [nextOffset, setNextOffset] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [sentinel, setSentinel] = useState(null);
+  const [initialLoading, setInitialLoading] = useState(false);
 
   useEffect(()=>{ setCatalogMap(new Map(products.map(p=>[p.id,p]))); }, [products]);
 
   useEffect(()=>{
     // initial page if orders empty
     if (!orders?.length){
+      setInitialLoading(true);
       listOrdersPaged({ limit: 20, offset: 0 }).then(data=>{
         setOrders(data.items||[]); setNextOffset(data.next_offset ?? null);
-      }).catch(()=>{});
+      }).catch(()=>{}).finally(()=>setInitialLoading(false));
     }
   }, []);
 
@@ -71,6 +73,20 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
       <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b px-3 py-2">
         <Input value={q} onChange={(e)=>setQ(e.target.value)} placeholder="Search by phone, product ID, name" className="text-base" />
       </div>
+      {initialLoading && orders.length===0 && (
+        <div className="grid grid-cols-1 gap-3">
+          {Array.from({length:3}).map((_,i)=> (
+            <div key={i} className="p-3 space-y-2 border rounded animate-pulse">
+              <div className="h-4 bg-neutral-100 rounded w-1/3"/>
+              <div className="h-3 bg-neutral-100 rounded w-1/2"/>
+              <div className="grid grid-cols-3 gap-2">
+                {Array.from({length:3}).map((_,j)=>(<div key={j} className="h-24 bg-neutral-100 rounded"/>))}
+              </div>
+              <div className="h-8 bg-neutral-100 rounded w-full"/>
+            </div>
+          ))}
+        </div>
+      )}
       {filtered.map(o=> (
         <Card key={o.id} className="p-3 space-y-2">
           <div className="flex items-center justify-between">
@@ -89,7 +105,7 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
               if (!p) return null;
               return (
                 <div key={id} className="relative">
-                  <img src={p.images?.[0]} alt={p.title} className="h-24 w-full object-cover rounded-lg" onClick={()=>setPreview({ url:p.images?.[0], product:p, order:o })} />
+                  <img src={p.images?.[0]} alt={p.title} loading="lazy" decoding="async" className="h-24 w-full object-cover rounded-lg" onClick={()=>setPreview({ url:p.images?.[0], product:p, order:o })} />
                   <Button size="icon" variant="secondary" className="absolute top-1 right-1 h-7 w-7" onClick={()=>setPreview({ url:p.images?.[0], product:p, order:o })}><Eye className="h-4 w-4"/></Button>
                 </div>
               )
@@ -103,7 +119,7 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
                   const p = map.get(id);
                   return p ? (
                     <div key={id} className="relative">
-                      <img src={p.images?.[0]} alt={p.title} className="h-16 w-full object-cover rounded"/>
+                      <img src={p.images?.[0]} alt={p.title} loading="lazy" decoding="async" className="h-16 w-full object-cover rounded"/>
                       <Button size="icon" variant="secondary" className="absolute top-1 right-1 h-7 w-7" onClick={async()=>{
                         try{
                           const updated = await addItemToOrder(o.id, id);
@@ -124,11 +140,9 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
             <div className="font-semibold">₹{o._total.toLocaleString('en-IN')}</div>
           </div>
           <div className="flex gap-2">
-            <Button className="w-1/2" variant="outline" asChild>
-              <a className="flex items-center justify-center gap-2" href={`https://wa.me/${encodeURIComponent(o.customer_phone)}?text=${encodeURIComponent('Hi about shortlist '+o.id)}`} target="_blank" rel="noreferrer">
-                <MessageCircle className="h-4 w-4"/>
-                <span>Chat</span>
-              </a>
+            <Button className="w-1/2 flex items-center justify-center gap-2" variant="outline" onClick={()=>{ window.open(waLink(o.customer_phone, `Hi about shortlist ${o.id}`), '_blank'); }}>
+              <MessageCircle className="h-4 w-4"/>
+              <span>Chat</span>
             </Button>
             {o._status==='pending' ? (
               <Button className="w-1/2 flex items-center justify-center gap-2" onClick={()=>confirm(o)}><CheckCircle2 className="h-4 w-4"/>Confirm Order</Button>
@@ -140,17 +154,19 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
       ))}
 
       <Dialog open={!!preview} onOpenChange={()=>setPreview(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md p-0">
           {preview && (
-            <div className="space-y-2">
-              <img src={preview.url} alt="preview" className="w-full h-auto rounded-lg"/>
+            <div className="flex flex-col">
+              <div className="max-h-[70vh] grid place-items-center p-2">
+                <img src={preview.url} alt="preview" className="max-h-[70vh] w-auto h-auto rounded-lg object-contain"/>
+              </div>
               {(()=>{ const p = preview.product; return p ? (
-                <div className="text-sm">
+                <div className="text-sm p-3 border-t bg-white sticky bottom-0">
                   <div className="font-medium">{p.title}</div>
                   <div className="text-neutral-500">ID: {p.id} • ₹{(p.price||0).toLocaleString('en-IN')}</div>
                   <div className="flex justify-end gap-2 mt-2">
-                    <Button variant="outline" onClick={()=>setPreview(null)}>Close</Button>
-                    <Button variant="destructive" onClick={async()=>{ try{ const updated = await removeItemFromOrder(preview.order.id, p.id); setOrders(orders.map(o=> o.id===updated.id? updated : o)); } finally { setPreview(null); } }}>Remove from Shortlist</Button>
+                    <Button variant="outline" onClick={()=>setPreview(null)} className="flex items-center justify-center">Close</Button>
+                    <Button variant="destructive" onClick={async()=>{ try{ const updated = await removeItemFromOrder(preview.order.id, p.id); setOrders(orders.map(o=> o.id===updated.id? updated : o)); } finally { setPreview(null); } }} className="flex items-center justify-center">Remove from Shortlist</Button>
                   </div>
                 </div>
               ) : null; })()}

@@ -93,13 +93,29 @@ export default function InventoryView({ products, setProducts }){
         </div>
       </div>
       <CardContent>
+        {/* Shimmer while first page loading */}
+        {(loading || (products.length===0 && loadingMore)) && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {Array.from({length:9}).map((_,i)=>(
+              <div key={i} className="border rounded-xl overflow-hidden animate-pulse">
+                <div className="h-48 bg-neutral-100"/>
+                <div className="p-3 space-y-2">
+                  <div className="h-4 bg-neutral-100 rounded w-3/4"/>
+                  <div className="h-3 bg-neutral-100 rounded w-full"/>
+                  <div className="h-3 bg-neutral-100 rounded w-2/3"/>
+                  <div className="h-8 bg-neutral-100 rounded w-full mt-2"/>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {products.filter(p=>{
             const text = `${p.id} ${p.title} ${p.description}`.toLowerCase();
             return text.includes(q.toLowerCase());
           }).slice(0, displayCount).map(p=> (
             <div key={p.id} className="border rounded-xl overflow-hidden">
-              <img src={p.images?.[0]} alt={p.title} loading="lazy" className="h-48 w-full object-cover"/>
+              <img src={p.images?.[0]} alt={p.title} loading="lazy" decoding="async" sizes="(max-width: 1024px) 50vw, 33vw" className="h-48 w-full object-cover"/>
               <div className="p-3 space-y-2">
                 <div className="text-sm font-medium line-clamp-1">{p.title}</div>
                 <div className="flex items-center gap-2">

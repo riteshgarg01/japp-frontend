@@ -18,7 +18,15 @@ export const b64FromFile = (f) =>
   });
 
 export function waLink(phone, text){
-  const p = encodeURIComponent((phone||"").replace(/[^+\d]/g,""));
+  let raw = String(phone||"").replace(/[^+\d]/g, "");
+  // Normalize: if no leading "+", assume Indian 10-digit numbers => prefix +91
+  if (!raw.startsWith("+")){
+    // If it's 10 digits, prefix +91, else just prefix +
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length === 10) raw = "+91" + digits;
+    else raw = "+" + digits;
+  }
+  const p = encodeURIComponent(raw);
   const t = encodeURIComponent(text || "");
   return `https://wa.me/${p}?text=${t}`;
 }

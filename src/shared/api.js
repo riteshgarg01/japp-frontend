@@ -42,6 +42,12 @@ export async function listProductsPaged(params = {}){
   return await r.json(); // { items, total, next_offset }
 }
 
+export async function getProductImages(id){
+  const r = await fetch(`${API_BASE}/products/${encodeURIComponent(id)}/images`, { headers: { ...NGROK_HEADERS } });
+  if (!r.ok) throw new Error('load images failed');
+  return await r.json(); // { images }
+}
+
 export async function listOwnerProductsPaged(params = {}){
   const u = API_BASE
     ? new URL(`${API_BASE}/owner/products`)
