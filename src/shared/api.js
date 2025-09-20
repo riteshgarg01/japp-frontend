@@ -181,3 +181,19 @@ export async function getOrdersBySession(sessionId, limit=1){
   if (!r.ok) throw new Error('load by_session failed');
   return await r.json();
 }
+
+// ---- Analytics ----
+export async function trackEvent(kind, payload = {}){
+  // Attach session id if available
+  let session_id = null;
+  try { session_id = localStorage.getItem('ac_session_id') || null; } catch {}
+  const body = { kind, payload, session_id };
+  // Build URL and include token as query param for visibility (some proxies strip headers)
+  const r = await apiFetch(`${API_BASE}/events`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  // ignore non-OK silently (observability should not break UX)
+  try { await r.json(); } catch {}
+}

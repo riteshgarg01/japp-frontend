@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { ShoppingCart, Filter, Phone, Image as ImageIcon, X } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged, getProductImages, getOrdersBySession } from "../../shared";
+import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged, getProductImages, getOrdersBySession, trackEvent } from "../../shared";
 // ShortlistSheet not used in full-screen view anymore
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -31,6 +31,10 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const [preview, setPreview] = useState(null); // { product, index }
   const [imgIndexById, setImgIndexById] = useState({});
   const [imagesById, setImagesById] = useState({});
+  // Deduplicate in-flight image fetches per product to avoid repeated GETs
+  const inflightImgsRef = useRef({});
+  // Remember products we already attempted to fetch (even if they only have 1 image)
+  const fetchedIdsRef = useRef(new Set());
   const [descExpanded, setDescExpanded] = useState(new Set());
   const touchRef = useRef({ startX: 0, startY: 0, t: 0 });
 
@@ -143,18 +147,39 @@ useEffect(()=>{
     setShortlist(sl => {
       const has = sl.includes(id);
       if (!has && !phone){ setPendingAddId(id); setPhoneModal(true); return sl; }
-      return has ? sl.filter(x=>x!==id) : [...sl, id];
+      const next = has ? sl.filter(x=>x!==id) : [...sl, id];
+      try{
+        trackEvent(has ? "remove_from_cart" : "add_to_cart", { product_id: id });
+      }catch{}
+      return next;
     });
   }
   function isInCart(id){ return shortlist.includes(id); }
 
   async function ensureImages(p){
-    if ((imagesById[p.id]?.length||0) > 1) return imagesById[p.id];
-    try{
-      const { images } = await getProductImages(p.id);
-      setImagesById(prev=>({ ...prev, [p.id]: images }));
-      return images;
-    }catch{ return imagesById[p.id] || p.images || []; }
+    const pid = p.id;
+    // If we've already attempted for this product, don't re-fetch
+    if (fetchedIdsRef.current.has(pid)) {
+      return imagesById[pid] || p.images || [];
+    }
+    fetchedIdsRef.current.add(pid);
+    const cached = imagesById[pid];
+    if ((cached?.length || 0) > 1) return cached;
+    // If a fetch is already in-flight for this product, reuse it
+    if (inflightImgsRef.current[pid]) return inflightImgsRef.current[pid];
+    inflightImgsRef.current[pid] = (async () => {
+      try{
+        const { images } = await getProductImages(pid);
+        setImagesById(prev=>({ ...prev, [pid]: images }));
+        return images;
+      }catch{
+        return imagesById[pid] || p.images || [];
+      }finally{
+        // Release the in-flight marker on next tick
+        setTimeout(()=>{ delete inflightImgsRef.current[pid]; }, 0);
+      }
+    })();
+    return inflightImgsRef.current[pid];
   }
 
   async function sendOrder(phoneVal){
@@ -166,6 +191,7 @@ useEffect(()=>{
       onOrderCreate(created);
       setShortlist([]);
       toast.success("Order request sent");
+      try{ trackEvent('send_order', { order_id: created.id, items: created.items?.length||0 }); }catch{}
       const msg = `New order request ${created.id}%0AItems: ${created.items.join(", ")}%0ACustomer: ${phoneVal}`;
       const url = waLink(ownerPhone, decodeURIComponent(msg));
       if (w && !w.closed) { w.location = url; } else { window.location.href = url; }
@@ -177,18 +203,18 @@ useEffect(()=>{
   // Prefetch full image arrays for currently rendered products
   useEffect(()=>{
     const visible = filtered.slice(0, displayCount);
+    // Only trigger fetch for products we haven't attempted yet
     (async ()=>{
       try{
         await Promise.all(visible.map(p=>{
-          const cached = imagesById[p.id];
-          if (cached && cached.length>1) return null;
-          if ((p.images||[]).length<=1) return ensureImages(p);
-          // if list already has multiple images, still ensure full-res
+          if (fetchedIdsRef.current.has(p.id)) return null;
+          if (inflightImgsRef.current[p.id]) return inflightImgsRef.current[p.id];
           return ensureImages(p);
         }));
       }catch{}
     })();
-  }, [filtered, displayCount]);
+    // Depend on the composition of visible ids to avoid thrash
+  }, [filtered.length, displayCount]);
 
   return (
     <>
@@ -375,7 +401,7 @@ useEffect(()=>{
             <Input value={phone} onChange={(e)=>setPhone(e.target.value)} placeholder="e.g. 8884024446" inputMode="tel" />
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={()=>setPhoneModal(false)}>Cancel</Button>
-              <Button onClick={()=>{ if(!phone.trim()) return; const v=phone.trim(); localStorage.setItem('ac_phone', v); setPhone(v); setPhoneModal(false); if (pendingAddId){ setShortlist(sl=> sl.includes(pendingAddId)? sl : [...sl, pendingAddId]); setPendingAddId(null); } }}>Save</Button>
+              <Button onClick={()=>{ if(!phone.trim()) return; const v=phone.trim(); localStorage.setItem('ac_phone', v); setPhone(v); setPhoneModal(false); if (pendingAddId){ setShortlist(sl=> sl.includes(pendingAddId)? sl : [...sl, pendingAddId]); try{ trackEvent('add_to_cart', { product_id: pendingAddId }); }catch{} setPendingAddId(null); } }}>Save</Button>
             </div>
           </div>
         </DialogContent>

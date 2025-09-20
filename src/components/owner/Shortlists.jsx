@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Eye, MessageCircle, CheckCircle2, Plus } from "lucide-react";
 import { toast } from "sonner";
-import { confirmOrder as apiConfirmOrder, listOrdersPaged, removeItemFromOrder, addItemToOrder } from "../../shared";
+import { confirmOrder as apiConfirmOrder, listOrdersPaged, removeItemFromOrder, addItemToOrder, trackEvent } from "../../shared";
 import { formatDateTime, waLink } from "../../shared";
 
 export default function OwnerShortlists({ products, orders, setOrders, setProducts }){
