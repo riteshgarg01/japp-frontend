@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { ShoppingCart, Filter, Phone, Image as ImageIcon, X } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged, getProductImages } from "../../shared";
+import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged, getProductImages, getOrdersBySession } from "../../shared";
 // ShortlistSheet not used in full-screen view anymore
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -34,7 +34,29 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const [descExpanded, setDescExpanded] = useState(new Set());
   const touchRef = useRef({ startX: 0, startY: 0, t: 0 });
 
-  useEffect(()=>localStorage.setItem("ac_shortlist", JSON.stringify(shortlist)), [shortlist]);
+  // lightweight session + phone persistence
+  const [sessionId, setSessionId] = useState(()=> localStorage.getItem('ac_session_id') || `sess-${Math.random().toString(36).slice(2,8)}-${Date.now().toString(36)}`);
+  const [phone, setPhone] = useState(()=> localStorage.getItem('ac_phone') || "");
+  const [phoneModal, setPhoneModal] = useState(false);
+  const [orderBanner, setOrderBanner] = useState(null); // { id, when }
+  const [pendingAddId, setPendingAddId] = useState(null);
+
+useEffect(()=>localStorage.setItem("ac_shortlist", JSON.stringify(shortlist)), [shortlist]);
+useEffect(()=>{ localStorage.setItem('ac_session_id', sessionId); }, [sessionId]);
+useEffect(()=>{ if (phone) localStorage.setItem('ac_phone', phone); }, [phone]);
+
+// show last order banner (best-effort) when returning
+useEffect(()=>{
+  (async ()=>{
+    try{
+      const sid = localStorage.getItem('ac_session_id');
+      if (!sid) return;
+      const data = await getOrdersBySession(sid, 1);
+      const last = (data.items||[])[0];
+      if (last) setOrderBanner({ id: last.id, when: last.created_at });
+    }catch{}
+  })();
+}, []);
 
   const [catalog, setCatalog] = useState([]);
   const [total, setTotal] = useState(0);
@@ -117,7 +139,13 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
     fetchPage(10, 0).catch(()=>{});
   }, [cat, priceRange[0], priceRange[1], q, hideUnavailable]);
 
-  function toggleShortlist(id){ setShortlist(sl => sl.includes(id) ? sl.filter(x=>x!==id) : [...sl, id]); }
+  function toggleShortlist(id){
+    setShortlist(sl => {
+      const has = sl.includes(id);
+      if (!has && !phone){ setPendingAddId(id); setPhoneModal(true); return sl; }
+      return has ? sl.filter(x=>x!==id) : [...sl, id];
+    });
+  }
   function isInCart(id){ return shortlist.includes(id); }
 
   async function ensureImages(p){
@@ -129,21 +157,38 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
     }catch{ return imagesById[p.id] || p.images || []; }
   }
 
-  async function sendOrder(phone){
+  async function sendOrder(phoneVal){
     if (!shortlist.length) return toast.error("Shortlist is empty");
     try{
       // Open a placeholder window immediately to avoid popup blockers on mobile Safari
       const w = window.open('about:blank', '_blank');
-      const created = await apiCreateOrder(shortlist, phone);
+      const created = await apiCreateOrder(shortlist, phoneVal, sessionId);
       onOrderCreate(created);
       setShortlist([]);
       toast.success("Order request sent");
-      const msg = `New order request ${created.id}%0AItems: ${created.items.join(", ")}%0ACustomer: ${phone}`;
+      const msg = `New order request ${created.id}%0AItems: ${created.items.join(", ")}%0ACustomer: ${phoneVal}`;
       const url = waLink(ownerPhone, decodeURIComponent(msg));
       if (w && !w.closed) { w.location = url; } else { window.location.href = url; }
       setShortlistOpen(false);
+      localStorage.setItem('ac_last_order_id', created.id);
     }catch(e){ console.error(e); toast.error("Failed to send order"); }
   }
+
+  // Prefetch full image arrays for currently rendered products
+  useEffect(()=>{
+    const visible = filtered.slice(0, displayCount);
+    (async ()=>{
+      try{
+        await Promise.all(visible.map(p=>{
+          const cached = imagesById[p.id];
+          if (cached && cached.length>1) return null;
+          if ((p.images||[]).length<=1) return ensureImages(p);
+          // if list already has multiple images, still ensure full-res
+          return ensureImages(p);
+        }));
+      }catch{}
+    })();
+  }, [filtered, displayCount]);
 
   return (
     <>
@@ -174,6 +219,12 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
         </div>
       </div>
 
+      {orderBanner && (
+        <div className="mb-3 text-sm text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">
+          We received your order {orderBanner.id}. We will get in touch shortly.
+          <button className="float-right text-green-700" onClick={()=>setOrderBanner(null)}>×</button>
+        </div>
+      )}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {loading && catalog.length===0 && (
           <>
@@ -202,14 +253,38 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
                 <div className="h-72 bg-neutral-100 relative">
                   {(imagesById[p.id]?.[0] || p.images?.[0]) ? (
                     <>
-                      <img src={(imagesById[p.id] || p.images)[imgIndexById[p.id]||0] || (imagesById[p.id] || p.images)[0]} alt={p.title} loading="lazy" decoding="async" sizes="(max-width: 640px) 100vw, 33vw" className="h-full w-full object-contain" onClick={async()=>{
-                        if (!imagesById[p.id]) await ensureImages(p);
+                      <img src={(imagesById[p.id] || p.images)[imgIndexById[p.id]||0] || (imagesById[p.id] || p.images)[0]} alt={p.title} loading="lazy" decoding="async" sizes="(max-width: 640px) 100vw, 33vw" className="h-full w-full object-contain" onClick={()=>{
+                        // Open preview immediately using whatever images we have
                         setPreview({ product: p, index: imgIndexById[p.id]||0 });
+                        // Kick off background fetch for full images (do not block UI)
+                        if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p); }
                       }} />
                       {((imagesById[p.id] || p.images)?.length>1) && (
                         <>
-                          <button className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/70 hover:bg-white/90 rounded-full w-8 h-8 grid place-items-center" onClick={async (e)=>{ e.stopPropagation(); const imgs = (imagesById[p.id] || await ensureImages(p)); setImgIndexById(s=>({ ...s, [p.id]: ((s[p.id]||0) - 1 + imgs.length) % imgs.length })); }}>‹</button>
-                          <button className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/70 hover:bg-white/90 rounded-full w-8 h-8 grid place-items-center" onClick={async (e)=>{ e.stopPropagation(); const imgs = (imagesById[p.id] || await ensureImages(p)); setImgIndexById(s=>({ ...s, [p.id]: ((s[p.id]||0) + 1) % imgs.length })); }}>›</button>
+                          <button
+                            className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/70 hover:bg-white/90 rounded-full w-8 h-8 grid place-items-center"
+                            onClick={(e)=>{
+                              e.stopPropagation();
+                              const imgs = (imagesById[p.id] || p.images || []);
+                              const len = Math.max(1, imgs.length);
+                              setImgIndexById(s=>({ ...s, [p.id]: ((s[p.id]||0) - 1 + len) % len }));
+                              if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p); }
+                            }}
+                          >
+                            ‹
+                          </button>
+                          <button
+                            className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/70 hover:bg-white/90 rounded-full w-8 h-8 grid place-items-center"
+                            onClick={(e)=>{
+                              e.stopPropagation();
+                              const imgs = (imagesById[p.id] || p.images || []);
+                              const len = Math.max(1, imgs.length);
+                              setImgIndexById(s=>({ ...s, [p.id]: ((s[p.id]||0) + 1) % len }));
+                              if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p); }
+                            }}
+                          >
+                            ›
+                          </button>
                         </>
                       )}
                     </>
@@ -290,6 +365,22 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
         </DialogContent>
       </Dialog>
 
+      {/* Phone modal for first add-to-cart */}
+      <Dialog open={phoneModal} onOpenChange={setPhoneModal}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Enter your phone number</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input value={phone} onChange={(e)=>setPhone(e.target.value)} placeholder="e.g. 8884024446" inputMode="tel" />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={()=>setPhoneModal(false)}>Cancel</Button>
+              <Button onClick={()=>{ if(!phone.trim()) return; const v=phone.trim(); localStorage.setItem('ac_phone', v); setPhone(v); setPhoneModal(false); if (pendingAddId){ setShortlist(sl=> sl.includes(pendingAddId)? sl : [...sl, pendingAddId]); setPendingAddId(null); } }}>Save</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Sentinel for infinite scroll (always present) */}
       <div ref={setSentinelRef} className="h-10" />
 
@@ -305,20 +396,28 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
             </div>
             {/* Sticky top controls to avoid bottom address bar issues */}
             <div className="px-4 py-3 border-b bg-white sticky top-0 z-10">
-              <div className="flex gap-2">
-                <Input
-                  type="tel"
-                  inputMode="tel"
-                  value={custPhoneMobile}
-                  onChange={(e)=>setCustPhoneMobile(e.target.value)}
-                  onFocus={(e)=>{ e.currentTarget.select(); e.currentTarget.scrollIntoView({ block: 'center' }); }}
-                  placeholder="Your WhatsApp (+91...)"
-                  className="text-base"
-                />
-                <Button className="shrink-0 flex items-center justify-center gap-2" onClick={()=>{ const v=(custPhoneMobile||"").trim(); if(!v) return toast.error("Enter WhatsApp number"); sendOrder(v); }}>
-                  <Phone className="h-4 w-4"/>Send Order
-                </Button>
-              </div>
+              {phone ? (
+                <div className="flex gap-2">
+                  <Button className="shrink-0 flex items-center justify-center gap-2 w-full" onClick={()=>sendOrder(phone)}>
+                    <Phone className="h-4 w-4"/>Send Order
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <Input
+                    type="tel"
+                    inputMode="tel"
+                    value={custPhoneMobile}
+                    onChange={(e)=>setCustPhoneMobile(e.target.value)}
+                    onFocus={(e)=>{ e.currentTarget.select(); e.currentTarget.scrollIntoView({ block: 'center' }); }}
+                    placeholder="Your WhatsApp (+91...)"
+                    className="text-base"
+                  />
+                  <Button className="shrink-0 flex items-center justify-center gap-2" onClick={()=>{ const v=(custPhoneMobile||"").trim(); if(!v) return toast.error("Enter WhatsApp number"); setPhone(v); localStorage.setItem('ac_phone', v); sendOrder(v); }}>
+                    <Phone className="h-4 w-4"/>Send Order
+                  </Button>
+                </div>
+              )}
             </div>
             <div className="flex-1 overflow-auto p-4">
               {/* Bigger product entries for recall */}

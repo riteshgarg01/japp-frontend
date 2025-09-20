@@ -132,11 +132,11 @@ export async function listOrders(){
   return Array.isArray(data) ? data : (data.items || []);
 }
 
-export async function createOrder(items, customerPhone){
+export async function createOrder(items, customerPhone, sessionId){
   const r = await fetch(`${API_BASE}/orders`, {
     method: "POST",
     headers: {"Content-Type":"application/json", ...NGROK_HEADERS},
-    body: JSON.stringify({ items, customer_phone: customerPhone }),
+    body: JSON.stringify({ items, customer_phone: customerPhone, session_id: sessionId }),
   });
   if (!r.ok) throw new Error("create order failed");
   return await r.json();
@@ -145,5 +145,16 @@ export async function createOrder(items, customerPhone){
 export async function confirmOrder(id){
   const r = await fetch(`${API_BASE}/orders/${encodeURIComponent(id)}/confirm`, { method: "PATCH", headers: { ...NGROK_HEADERS } });
   if (!r.ok) throw new Error("confirm order failed");
+  return await r.json();
+}
+
+export async function getOrdersBySession(sessionId, limit=1){
+  const u = API_BASE
+    ? new URL(`${API_BASE}/orders/by_session`)
+    : new URL('/orders/by_session', window.location.origin);
+  u.searchParams.set('session_id', sessionId);
+  u.searchParams.set('limit', String(limit));
+  const r = await fetch(u.toString().replace(window.location.origin, ''), { headers: { ...NGROK_HEADERS } });
+  if (!r.ok) throw new Error('load by_session failed');
   return await r.json();
 }
