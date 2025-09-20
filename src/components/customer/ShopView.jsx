@@ -128,7 +128,7 @@ useEffect(()=>{
           setDisplayCount((n)=> Math.min(filtered.length, n + loadStep));
         }
       }
-    }, { rootMargin: '300px' });
+    }, { rootMargin: '800px' });
     io.observe(sentinelRef);
     return ()=> io.disconnect();
   }, [sentinelRef, nextOffset, filtered.length]);

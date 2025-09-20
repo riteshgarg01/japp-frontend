@@ -2,6 +2,29 @@ import { API_BASE } from "./config.js";
 
 // Bypass ngrok's browser warning interstitial (ERR_NGROK_6024)
 const NGROK_HEADERS = API_BASE.includes("ngrok-free.app") ? { "ngrok-skip-browser-warning": "true" } : {};
+const adminHeaders = () => {
+  try {
+    const t = localStorage.getItem('admin_token');
+    return t ? { Authorization: 'Bearer ' + t, 'X-Admin-Token': t } : {};
+  } catch {
+    return {};
+  }
+};
+
+const withAuthHeaders = (headers = {}) => ({ ...NGROK_HEADERS, ...adminHeaders(), ...headers });
+
+async function apiFetch(url, options = {}){
+  const opts = { ...options, headers: withAuthHeaders(options.headers || {}) };
+  const r = await fetch(url, opts);
+  if (r.status === 401) {
+    try { localStorage.removeItem('admin_token'); } catch {}
+    if (typeof window !== 'undefined' && window.location && window.location.pathname.includes('/owner')) {
+      window.location.reload();
+    }
+    throw new Error('unauthorized');
+  }
+  return r;
+}
 
 const toProductIn = (p) => ({
   id: p.id,
@@ -16,13 +39,13 @@ const toProductIn = (p) => ({
 });
 
 export async function getConfig(){
-  const r = await fetch(`${API_BASE}/config`, { headers: { ...NGROK_HEADERS } });
+  const r = await apiFetch(`${API_BASE}/config`);
   if (!r.ok) throw new Error("load config failed");
   return await r.json();
 }
 
 export async function listProducts(){
-  const r = await fetch(`${API_BASE}/products`, { headers: { ...NGROK_HEADERS } });
+  const r = await apiFetch(`${API_BASE}/products`);
   if (!r.ok) throw new Error("load products failed");
   const data = await r.json();
   return data.items || [];
@@ -37,13 +60,13 @@ export async function listProductsPaged(params = {}){
     if (v===undefined || v===null || v==='') return;
     u.searchParams.set(k, String(v));
   });
-  const r = await fetch(u.toString().replace(window.location.origin, ''), { headers: { ...NGROK_HEADERS } });
+  const r = await apiFetch(u.toString().replace(window.location.origin, ''));
   if (!r.ok) throw new Error("load products failed");
   return await r.json(); // { items, total, next_offset }
 }
 
 export async function getProductImages(id){
-  const r = await fetch(`${API_BASE}/products/${encodeURIComponent(id)}/images`, { headers: { ...NGROK_HEADERS } });
+  const r = await apiFetch(`${API_BASE}/products/${encodeURIComponent(id)}/images`);
   if (!r.ok) throw new Error('load images failed');
   return await r.json(); // { images }
 }
@@ -53,7 +76,7 @@ export async function listOwnerProductsPaged(params = {}){
     ? new URL(`${API_BASE}/owner/products`)
     : new URL('/owner/products', window.location.origin);
   Object.entries(params).forEach(([k,v])=>{ if(v!==undefined&&v!==null&&v!=='') u.searchParams.set(k,String(v)); });
-  const r = await fetch(u.toString().replace(window.location.origin, ''), { headers: { ...NGROK_HEADERS } });
+  const r = await apiFetch(u.toString().replace(window.location.origin, ''));
   if (!r.ok) throw new Error("load owner products failed");
   return await r.json();
 }
@@ -63,15 +86,15 @@ export async function listOrdersPaged(params = {}){
     ? new URL(`${API_BASE}/orders`)
     : new URL('/orders', window.location.origin);
   Object.entries(params).forEach(([k,v])=>{ if(v!==undefined&&v!==null&&v!=='') u.searchParams.set(k,String(v)); });
-  const r = await fetch(u.toString().replace(window.location.origin, ''), { headers: { ...NGROK_HEADERS } });
+  const r = await apiFetch(u.toString().replace(window.location.origin, ''));
   if (!r.ok) throw new Error("load orders failed");
   return await r.json();
 }
 
 export async function removeItemFromOrder(orderId, productId){
-  const r = await fetch(`${API_BASE || ''}/orders/${encodeURIComponent(orderId)}/remove_item`.replace(window.location.origin,''), {
+  const r = await apiFetch(`${API_BASE || ''}/orders/${encodeURIComponent(orderId)}/remove_item`.replace(window.location.origin,''), {
     method: 'PATCH',
-    headers: { 'Content-Type':'application/json', ...NGROK_HEADERS },
+    headers: { 'Content-Type':'application/json' },
     body: JSON.stringify({ pid: productId })
   });
   if (!r.ok) throw new Error('remove item failed');
@@ -79,9 +102,9 @@ export async function removeItemFromOrder(orderId, productId){
 }
 
 export async function addItemToOrder(orderId, productId){
-  const r = await fetch(`${API_BASE || ''}/orders/${encodeURIComponent(orderId)}/add_item`.replace(window.location.origin,''), {
+  const r = await apiFetch(`${API_BASE || ''}/orders/${encodeURIComponent(orderId)}/add_item`.replace(window.location.origin,''), {
     method: 'PATCH',
-    headers: { 'Content-Type':'application/json', ...NGROK_HEADERS },
+    headers: { 'Content-Type':'application/json' },
     body: JSON.stringify({ pid: productId })
   });
   if (!r.ok) throw new Error('add item failed');
@@ -89,9 +112,9 @@ export async function addItemToOrder(orderId, productId){
 }
 
 export async function createProduct(p){
-  const r = await fetch(`${API_BASE}/products`, {
+  const r = await apiFetch(`${API_BASE}/products`, {
     method: "POST",
-    headers: {"Content-Type":"application/json", ...NGROK_HEADERS},
+    headers: {"Content-Type":"application/json"},
     body: JSON.stringify(toProductIn(p)),
   });
   if (!r.ok) {
@@ -103,9 +126,9 @@ export async function createProduct(p){
 }
 
 export async function updateProduct(p){
-  const r = await fetch(`${API_BASE}/products/${encodeURIComponent(p.id)}`, {
+  const r = await apiFetch(`${API_BASE}/products/${encodeURIComponent(p.id)}`, {
     method: "PATCH",
-    headers: {"Content-Type":"application/json", ...NGROK_HEADERS},
+    headers: {"Content-Type":"application/json"},
     body: JSON.stringify(toProductIn(p)),
   });
   if (!r.ok) {
@@ -117,7 +140,7 @@ export async function updateProduct(p){
 }
 
 export async function deleteProduct(id){
-  const r = await fetch(`${API_BASE}/products/${encodeURIComponent(id)}`, { method: "DELETE", headers: { ...NGROK_HEADERS } });
+  const r = await apiFetch(`${API_BASE}/products/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (!r.ok) {
     let msg = "delete failed";
     try { msg = (await r.text()) || msg; } catch {}
@@ -126,16 +149,16 @@ export async function deleteProduct(id){
 }
 
 export async function listOrders(){
-  const r = await fetch(`${API_BASE}/orders`, { headers: { ...NGROK_HEADERS } });
+  const r = await apiFetch(`${API_BASE}/orders`);
   if (!r.ok) throw new Error("load orders failed");
   const data = await r.json();
   return Array.isArray(data) ? data : (data.items || []);
 }
 
 export async function createOrder(items, customerPhone, sessionId){
-  const r = await fetch(`${API_BASE}/orders`, {
+  const r = await apiFetch(`${API_BASE}/orders`, {
     method: "POST",
-    headers: {"Content-Type":"application/json", ...NGROK_HEADERS},
+    headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ items, customer_phone: customerPhone, session_id: sessionId }),
   });
   if (!r.ok) throw new Error("create order failed");
@@ -143,7 +166,7 @@ export async function createOrder(items, customerPhone, sessionId){
 }
 
 export async function confirmOrder(id){
-  const r = await fetch(`${API_BASE}/orders/${encodeURIComponent(id)}/confirm`, { method: "PATCH", headers: { ...NGROK_HEADERS } });
+  const r = await apiFetch(`${API_BASE}/orders/${encodeURIComponent(id)}/confirm`, { method: "PATCH" });
   if (!r.ok) throw new Error("confirm order failed");
   return await r.json();
 }
@@ -154,7 +177,7 @@ export async function getOrdersBySession(sessionId, limit=1){
     : new URL('/orders/by_session', window.location.origin);
   u.searchParams.set('session_id', sessionId);
   u.searchParams.set('limit', String(limit));
-  const r = await fetch(u.toString().replace(window.location.origin, ''), { headers: { ...NGROK_HEADERS } });
+  const r = await apiFetch(u.toString().replace(window.location.origin, ''));
   if (!r.ok) throw new Error('load by_session failed');
   return await r.json();
 }

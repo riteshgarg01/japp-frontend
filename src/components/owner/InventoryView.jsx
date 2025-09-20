@@ -78,7 +78,7 @@ export default function InventoryView({ products, setProducts }){
         if (nextOffset != null) fetchPage(loadStep, nextOffset);
         else setDisplayCount((n)=> Math.min(products.length, n + loadStep));
       }
-    }, { rootMargin: '300px' });
+    }, { rootMargin: '800px' });
     io.observe(sentinel);
     return ()=> io.disconnect();
   }, [sentinel, products.length, nextOffset]);
