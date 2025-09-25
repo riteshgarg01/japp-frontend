@@ -24,6 +24,13 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Set production env
+        run: |
+          echo "VITE_USE_PROXY=0" >> $GITHUB_ENV
+          echo "VITE_API_URL=${{ vars.VITE_API_URL || 'https://api.16shringaar.com' }}" >> $GITHUB_ENV
+          echo "VITE_SENTRY_DSN=${{ vars.VITE_SENTRY_DSN || '' }}" >> $GITHUB_ENV
+          echo "VITE_SENTRY_TRACES=${{ vars.VITE_SENTRY_TRACES || '0.0' }}" >> $GITHUB_ENV
+
       - name: Install deps
         run: npm ci
 
@@ -43,4 +50,3 @@ jobs:
       - name: Invalidate CloudFront
         if: env.CLOUDFRONT_DISTRIBUTION_ID != ''
         run: aws cloudfront create-invalidation --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" --paths '/*'
-
