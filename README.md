@@ -22,7 +22,8 @@ It expects your existing **shadcn/ui** components under `@/components/ui/*` and 
    @import "tailwindcss";
    ```
 5) Backend env:
-   - `VITE_API_URL=http://localhost:8000` (put in `.env.local`)
+   - Local dev: `.env.local` ships with `VITE_USE_PROXY=1`, the Vite dev server proxies API calls to `http://127.0.0.1:8000` using `vite.config.js`.
+   - Production build: update `.env.production` with your deployed API domain (default is `https://api.16shringaar.com`).
    - Owner phone now comes from the backend `GET /config` (set `OWNER_PHONE` in `arohi-backend/.env`).
 
 Run:
@@ -30,6 +31,17 @@ Run:
 npm install
 npm run dev -- --host
 ```
+
+## Production build
+
+Set the API URL in `.env.production`, then run:
+
+```bash
+npm run build
+aws s3 sync ./dist s3://<your-site-bucket>/ --delete
+```
+
+CloudFront should point at the bucket root; configure 403/404 → `/index.html` for SPA routing.
 
 ## Notes
 - The UI imports from `@/components/ui/...` (shadcn). Keep your generated components.
