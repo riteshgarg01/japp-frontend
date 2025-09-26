@@ -21,6 +21,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
   const [saving, setSaving] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [showDesc, setShowDesc] = useState(editing ? false : true);
+  const [shouldAutoMeta, setShouldAutoMeta] = useState(!editing);
   // Persist draft for non-editing flow so progress survives reloads
   const DRAFT_KEY = 'upload_draft_v1';
   // Load draft once for new upload
@@ -66,17 +67,47 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
   const cameraInputRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  async function handleFiles(fs){
-    const list = Array.from(fs);
-    const b64s = await Promise.all(list.map((f)=>b64FromFile(f)));
-    setImages(prev=>[...prev, ...b64s]);
+  async function runAIMetadata(primary){
+    if (!primary) return;
     try{
       setAiLoading(true);
-      const meta = await fetchAIMetadata(b64s.length ? [b64s[0]] : []);
+      const meta = await fetchAIMetadata([primary]);
       setCategory(meta.category);
       setTitle(meta.title);
       setDescription(meta.description);
-    } finally { setAiLoading(false); }
+    } finally {
+      setAiLoading(false);
+      setShouldAutoMeta(false);
+    }
+  }
+
+  async function handleFiles(fs){
+    const list = Array.from(fs);
+    const b64s = await Promise.all(list.map((f)=>b64FromFile(f)));
+    const nextImages = [...images, ...b64s];
+    setImages(nextImages);
+    const shouldRun = (!editing) || shouldAutoMeta;
+    if (shouldRun && nextImages.length){
+      await runAIMetadata(nextImages[0]);
+    }
+  }
+
+  function handleRemoveImage(index){
+    const next = images.filter((_,idx)=>idx!==index);
+    setImages(next);
+    if (!editing){
+      if (next.length === 0){
+        setShouldAutoMeta(true);
+      }
+      return;
+    }
+    if (index === 0){
+      if (next.length){
+        runAIMetadata(next[0]);
+      } else {
+        setShouldAutoMeta(true);
+      }
+    }
   }
 
   async function save(){
@@ -108,7 +139,18 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
         onAddProduct(created);
         toast.success("Product added to catalog");
       }
-      if (!editing){ setImages([]); setTitle(""); setDescription(""); setPrice(0); setCost(0); setQty(1); setCategory(""); setSubmitted(false); clearDraft(); }
+      if (!editing){
+        setImages([]);
+        setTitle("");
+        setDescription("");
+        setPrice(0);
+        setCost(0);
+        setQty(1);
+        setCategory("");
+        setSubmitted(false);
+        setShouldAutoMeta(true);
+        clearDraft();
+      }
   }catch(e){ console.error(e); toast.error(e?.message || "Save failed"); }
   finally { setSaving(false); }
   }
@@ -144,7 +186,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
                 {images.map((src, i)=> (
                   <div key={i} className="relative">
                     <img src={src} alt="preview" loading="lazy" className="h-24 w-full object-cover rounded-xl"/>
-                    <Button size="icon" variant="secondary" className="absolute top-1 right-1 h-7 w-7" onClick={()=>setImages(images.filter((_,idx)=>idx!==i))}>×</Button>
+                    <Button size="icon" variant="secondary" className="absolute top-1 right-1 h-7 w-7" onClick={()=>handleRemoveImage(i)}>×</Button>
                   </div>
                 ))}
               </div>

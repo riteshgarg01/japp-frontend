@@ -6,9 +6,9 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Pencil, Trash2 } from "lucide-react";
+import { Pencil, Trash2, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { updateProduct as apiUpdateProduct, deleteProduct as apiDeleteProduct, fmt, listOwnerProductsPaged } from "../../shared";
+import { updateProduct as apiUpdateProduct, deleteProduct as apiDeleteProduct, fmt, listOwnerProductsPaged, getProductImages } from "../../shared";
 import UploadView from "./UploadView.jsx";
 
 export default function InventoryView({ products, setProducts }){
@@ -22,6 +22,7 @@ export default function InventoryView({ products, setProducts }){
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const fetchedOffsets = useState(new Set())[0];
+  const [editLoadingId, setEditLoadingId] = useState(null);
 
   async function toggleAvailability(id){
     let target = products.find(p=>p.id===id);
@@ -50,7 +51,23 @@ export default function InventoryView({ products, setProducts }){
     catch(e){ console.error(e); toast.error("Delete failed"); setProducts(prev); }
   }
 
-  function openEdit(p){ setEditing(p); setEditOpen(true); }
+  async function openEdit(p){
+    if (editLoadingId) return;
+    setEditLoadingId(p.id);
+    let nextEditing = { ...p };
+    try {
+      const full = await getProductImages(p.id);
+      const imgs = Array.isArray(full?.images) && full.images.length ? full.images : (p.images || []);
+      nextEditing = { ...p, images: imgs };
+    } catch (e) {
+      console.error(e);
+      toast.error("Couldn't fetch full images; using cached preview.");
+    } finally {
+      setEditing(nextEditing);
+      setEditOpen(true);
+      setEditLoadingId(null);
+    }
+  }
   function saveEdit(updated){ setProducts(products.map(p=> p.id===updated.id ? updated : p)); setEditOpen(false); setEditing(null); }
 
   async function fetchPage(limit, offset){
@@ -65,6 +82,12 @@ export default function InventoryView({ products, setProducts }){
         return Array.from(map.values());
       });
       setNextOffset(data.next_offset ?? null);
+    } catch (e) {
+      fetchedOffsets.delete(offset);
+      if (offset === 0) {
+        toast.error("Failed to load inventory");
+      }
+      console.error(e);
     } finally {
       setLoading(false); setLoadingMore(false);
     }
@@ -135,7 +158,9 @@ export default function InventoryView({ products, setProducts }){
                 <div className="flex items-center justify-between">
                   <div className="text-xs text-neutral-500">ID: {p.id}</div>
                   <div className="flex items-center gap-1">
-                    <Button size="icon" variant="ghost" onClick={()=>openEdit(p)} title="Edit"><Pencil className="h-4 w-4"/></Button>
+                    <Button size="icon" variant="ghost" onClick={()=>openEdit(p)} title="Edit" disabled={editLoadingId === p.id}>
+                      {editLoadingId === p.id ? <Loader2 className="h-4 w-4 animate-spin"/> : <Pencil className="h-4 w-4"/>}
+                    </Button>
                     <Button size="icon" variant="ghost" onClick={()=>removeProduct(p.id)} title="Delete"><Trash2 className="h-4 w-4"/></Button>
                   </div>
                 </div>

@@ -18,17 +18,20 @@ export const b64FromFile = (f) =>
   });
 
 export function waLink(phone, text){
-  let raw = String(phone||"").replace(/[^+\d]/g, "");
-  // Normalize: if no leading "+", assume Indian 10-digit numbers => prefix +91
+  const raw = String(phone || "").trim();
+  let digits = raw.replace(/\D/g, "");
   if (!raw.startsWith("+")){
-    // If it's 10 digits, prefix +91, else just prefix +
-    const digits = raw.replace(/\D/g, "");
-    if (digits.length === 10) raw = "+91" + digits;
-    else raw = "+" + digits;
+    digits = digits.replace(/^0+/, "");
+    if (digits.length === 10){
+      digits = `91${digits}`;
+    }
   }
-  const p = encodeURIComponent(raw);
+  if (!digits){
+    const t = encodeURIComponent(text || "");
+    return `https://wa.me/?text=${t}`;
+  }
   const t = encodeURIComponent(text || "");
-  return `https://wa.me/${p}?text=${t}`;
+  return `https://wa.me/${digits}?text=${t}`;
 }
 
 // Category helpers: convert backend taxonomy to concise UI label

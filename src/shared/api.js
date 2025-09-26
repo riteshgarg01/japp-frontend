@@ -15,6 +15,9 @@ const withAuthHeaders = (headers = {}) => ({ ...NGROK_HEADERS, ...adminHeaders()
 
 async function apiFetch(url, options = {}){
   const opts = { ...options, headers: withAuthHeaders(options.headers || {}) };
+  if (!('cache' in opts)) {
+    opts.cache = 'no-store';
+  }
   const r = await fetch(url, opts);
   if (r.status === 401) {
     try { localStorage.removeItem('admin_token'); } catch {}

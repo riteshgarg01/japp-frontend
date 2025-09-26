@@ -185,16 +185,23 @@ useEffect(()=>{
   async function sendOrder(phoneVal){
     if (!shortlist.length) return toast.error("Shortlist is empty");
     try{
-      // Open a placeholder window immediately to avoid popup blockers on mobile Safari
-      const w = window.open('about:blank', '_blank');
+      const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+      const isMobile = /Mobi|Android|iPhone|iPad/i.test(ua);
+      const popup = isMobile ? null : window.open('', '_blank');
       const created = await apiCreateOrder(shortlist, phoneVal, sessionId);
       onOrderCreate(created);
       setShortlist([]);
       toast.success("Order request sent");
       try{ trackEvent('send_order', { order_id: created.id, items: created.items?.length||0 }); }catch{}
-      const msg = `New order request ${created.id}%0AItems: ${created.items.join(", ")}%0ACustomer: ${phoneVal}`;
-      const url = waLink(ownerPhone, decodeURIComponent(msg));
-      if (w && !w.closed) { w.location = url; } else { window.location.href = url; }
+      const msg = `New order request ${created.id}\nItems: ${created.items.join(", ")}\nCustomer: ${phoneVal}`;
+      const url = waLink(ownerPhone, msg);
+      if (isMobile) {
+        window.location.href = url;
+      } else if (popup && !popup.closed) {
+        popup.location = url;
+      } else {
+        window.open(url, '_blank');
+      }
       setShortlistOpen(false);
       localStorage.setItem('ac_last_order_id', created.id);
     }catch(e){ console.error(e); toast.error("Failed to send order"); }
