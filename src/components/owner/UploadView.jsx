@@ -1,5 +1,6 @@
 import { useRef, useState, useMemo, useEffect } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -22,6 +23,8 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
   const [submitted, setSubmitted] = useState(false);
   const [showDesc, setShowDesc] = useState(editing ? false : true);
   const [shouldAutoMeta, setShouldAutoMeta] = useState(!editing);
+  const existingStatus = (existing?.status || 'ready').toLowerCase();
+  const statusLabel = existingStatus === 'processing' ? 'Processing' : existingStatus === 'failed' ? 'Failed' : 'Ready';
   // Persist draft for non-editing flow so progress survives reloads
   const DRAFT_KEY = 'upload_draft_v1';
   // Load draft once for new upload
@@ -153,14 +156,18 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
     };
     try{
       setSaving(true);
+      let result;
       if (editing) {
-        const updated = await apiUpdateProduct(base);
-        onSaveEdit?.(updated);
+        result = await apiUpdateProduct(base);
+        onSaveEdit?.(result);
         toast.success("Product updated");
       } else {
-        const created = await apiCreateProduct(base);
-        onAddProduct(created);
+        result = await apiCreateProduct(base);
+        onAddProduct(result);
         toast.success("Product added to catalog");
+      }
+      if (result?.status === 'processing'){
+        toast.info('Images are being processed in the background…');
       }
       if (!editing){
         setImages([]);
@@ -180,19 +187,29 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
 
   return (
     <Card className="shadow-sm">
-      {!editing && (
-        <CardHeader>
+      <CardHeader>
+        <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-2">
-            Upload Product
+            {editing ? 'Edit Product' : 'Upload Product'}
             {aiLoading && (
               <span className="inline-flex items-center text-xs text-purple-700 bg-purple-50 border border-purple-200 px-2 py-0.5 rounded-full">
                 <Sparkles className="h-3 w-3 mr-1"/> AI filling…
               </span>
             )}
           </CardTitle>
-          <CardDescription>Use camera or browse. AI will prefill details (editable).</CardDescription>
-        </CardHeader>
-      )}
+          {editing && (
+            <Badge variant={existingStatus === 'failed' ? 'destructive' : existingStatus === 'processing' ? 'secondary' : 'outline'}>
+              {statusLabel}
+            </Badge>
+          )}
+        </div>
+        <CardDescription>{editing ? 'Update details or replace images. Images upload asynchronously.' : 'Use camera or browse. AI will prefill details (editable).'}</CardDescription>
+        {editing && existingStatus === 'failed' && existing?.processing_error && (
+          <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1 mt-2">
+            {existing.processing_error}
+          </div>
+        )}
+      </CardHeader>
       <CardContent className="grid md:grid-cols-2 gap-4">
         <div>
           <Label className="mb-2 block">Images</Label>

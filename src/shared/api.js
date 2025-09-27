@@ -142,6 +142,28 @@ export async function updateProduct(p){
   return await r.json();
 }
 
+export async function getOwnerProduct(id){
+  const r = await apiFetch(`${API_BASE}/owner/products/${encodeURIComponent(id)}`);
+  if (!r.ok) {
+    let msg = "load product failed";
+    try { msg = (await r.text()) || msg; } catch {}
+    throw new Error(msg);
+  }
+  return await r.json();
+}
+
+export async function reprocessProduct(id){
+  const r = await apiFetch(`${API_BASE}/owner/products/${encodeURIComponent(id)}/reprocess`, {
+    method: 'POST',
+  });
+  if (!r.ok) {
+    let msg = "reprocess failed";
+    try { msg = (await r.text()) || msg; } catch {}
+    throw new Error(msg);
+  }
+  return await r.json();
+}
+
 export async function deleteProduct(id){
   const r = await apiFetch(`${API_BASE}/products/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (!r.ok) {
