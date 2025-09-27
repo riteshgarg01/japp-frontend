@@ -9,12 +9,75 @@ export const makeProductId = (category) => {
 export const oid = () =>
   `ORD-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 
-export const b64FromFile = (f) =>
-  new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result);
-    r.onerror = rej;
-    r.readAsDataURL(f);
+export const b64FromFile = (file, opts = {}) =>
+  new Promise((resolve, reject) => {
+    try {
+      const {
+        maxDimension = 1600,
+        quality = 0.82,
+      } = opts || {};
+
+      const readAsDataURL = (blobOrFile) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blobOrFile);
+      };
+
+      if (typeof window === 'undefined' || !('URL' in window) || !maxDimension) {
+        readAsDataURL(file);
+        return;
+      }
+
+      const objectUrl = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const width = img.width;
+          const height = img.height;
+          const maxSide = Math.max(width, height);
+          const shouldResize = maxDimension && maxSide > maxDimension;
+
+          if (!shouldResize) {
+            URL.revokeObjectURL(objectUrl);
+            readAsDataURL(file);
+            return;
+          }
+
+          const scale = maxDimension / maxSide;
+          const targetWidth = Math.round(width * scale);
+          const targetHeight = Math.round(height * scale);
+          const canvas = document.createElement('canvas');
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          const ctx = canvas.getContext('2d', { alpha: false });
+          if (!ctx) {
+            URL.revokeObjectURL(objectUrl);
+            readAsDataURL(file);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+          canvas.toBlob((blob) => {
+            URL.revokeObjectURL(objectUrl);
+            if (!blob) {
+              readAsDataURL(file);
+              return;
+            }
+            readAsDataURL(blob);
+          }, 'image/jpeg', quality);
+        } catch (err) {
+          URL.revokeObjectURL(objectUrl);
+          reject(err);
+        }
+      };
+      img.onerror = (err) => {
+        URL.revokeObjectURL(objectUrl);
+        reject(err);
+      };
+      img.src = objectUrl;
+    } catch (err) {
+      reject(err);
+    }
   });
 
 export function waLink(phone, text){

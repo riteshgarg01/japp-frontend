@@ -82,17 +82,36 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
   }
 
   async function handleFiles(fs){
-    const list = Array.from(fs);
-    const b64s = await Promise.all(list.map((f)=>b64FromFile(f)));
-    const nextImages = [...images, ...b64s];
-    setImages(nextImages);
-    const shouldRun = (!editing) || shouldAutoMeta;
-    if (shouldRun && nextImages.length){
-      await runAIMetadata(nextImages[0]);
+    const files = Array.from(fs || []);
+    if (!files.length) return;
+    try{
+      const resized = [];
+      for (const file of files){
+        const dataUrl = await b64FromFile(file, { maxDimension: 1600, quality: 0.82 });
+        resized.push(dataUrl);
+      }
+      const nextImages = [...images, ...resized];
+      setImages(nextImages);
+
+      const shouldRun = (!editing) || shouldAutoMeta;
+      if (shouldRun && nextImages.length){
+        let aiPreview = resized[0] || nextImages[0];
+        if (files[0]){
+          try {
+            aiPreview = await b64FromFile(files[0], { maxDimension: 640, quality: 0.75 });
+          } catch (err) {
+            console.warn('AI preview resize failed, falling back to primary image', err);
+          }
+        }
+        await runAIMetadata(aiPreview);
+      }
+    }catch(err){
+      console.error(err);
+      toast.error('Failed to process image');
     }
   }
 
-  function handleRemoveImage(index){
+  async function handleRemoveImage(index){
     const next = images.filter((_,idx)=>idx!==index);
     setImages(next);
     if (!editing){
@@ -103,7 +122,11 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
     }
     if (index === 0){
       if (next.length){
-        runAIMetadata(next[0]);
+        try {
+          await runAIMetadata(next[0]);
+        } catch (err) {
+          console.error(err);
+        }
       } else {
         setShouldAutoMeta(true);
       }
