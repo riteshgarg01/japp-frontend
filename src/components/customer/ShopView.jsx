@@ -5,16 +5,15 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { ShoppingCart, Filter, Phone, Image as ImageIcon, X } from "lucide-react";
+import { ShoppingCart, Filter, Phone, Image as ImageIcon, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged, getProductImages, getOrdersBySession, trackEvent } from "../../shared";
 // ShortlistSheet not used in full-screen view anymore
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-
+const ORDER_BANNER_DISMISS_KEY = "ac_order_banner_dismissed";
 export default function ShopView({ products, onOrderCreate, ownerPhone, isLoading }){
   const [cat, setCat] = useState("All");
   const [priceRange, setPriceRange] = useState([0, 20000]);
@@ -44,6 +43,7 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const [phoneModal, setPhoneModal] = useState(false);
   const [orderBanner, setOrderBanner] = useState(null); // { id, when }
   const [pendingAddId, setPendingAddId] = useState(null);
+  const [orderSending, setOrderSending] = useState(false);
 
 useEffect(()=>localStorage.setItem("ac_shortlist", JSON.stringify(shortlist)), [shortlist]);
 useEffect(()=>{ localStorage.setItem('ac_session_id', sessionId); }, [sessionId]);
@@ -57,7 +57,17 @@ useEffect(()=>{
       if (!sid) return;
       const data = await getOrdersBySession(sid, 1);
       const last = (data.items||[])[0];
-      if (last) setOrderBanner({ id: last.id, when: last.created_at });
+      if (!last) return;
+      let dismissedId = null;
+      try {
+        const raw = localStorage.getItem(ORDER_BANNER_DISMISS_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          dismissedId = typeof parsed === 'string' ? parsed : parsed?.id ?? null;
+        }
+      } catch {}
+      if (dismissedId === last.id) return;
+      setOrderBanner({ id: last.id, when: last.created_at });
     }catch{}
   })();
 }, []);
@@ -182,12 +192,29 @@ useEffect(()=>{
     return inflightImgsRef.current[pid];
   }
 
+  const dismissOrderBanner = () => {
+    setOrderBanner(prev => {
+      if (prev){
+        try{ localStorage.setItem(ORDER_BANNER_DISMISS_KEY, JSON.stringify({ id: prev.id, ts: Date.now() })); }catch{}
+      }
+      return null;
+    });
+  };
+
   async function sendOrder(phoneVal){
-    if (!shortlist.length) return toast.error("Shortlist is empty");
+    if (!shortlist.length){
+      toast.error("Shortlist is empty");
+      return;
+    }
+    if (orderSending) return;
+    setOrderSending(true);
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+    const isMobile = /Mobi|Android|iPhone|iPad/i.test(ua);
+    let popup = null;
     try{
-      const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
-      const isMobile = /Mobi|Android|iPhone|iPad/i.test(ua);
-      const popup = isMobile ? null : window.open('', '_blank');
+      if (!isMobile){
+        popup = window.open('', '_blank');
+      }
       const created = await apiCreateOrder(shortlist, phoneVal, sessionId);
       onOrderCreate(created);
       setShortlist([]);
@@ -204,7 +231,14 @@ useEffect(()=>{
       }
       setShortlistOpen(false);
       localStorage.setItem('ac_last_order_id', created.id);
-    }catch(e){ console.error(e); toast.error("Failed to send order"); }
+      try{ localStorage.removeItem(ORDER_BANNER_DISMISS_KEY); }catch{}
+    }catch(e){
+      console.error(e);
+      if (popup && !popup.closed) { try{ popup.close(); }catch{} }
+      toast.error("Failed to send order");
+    }finally{
+      setTimeout(()=> setOrderSending(false), 500);
+    }
   }
 
   // Prefetch full image arrays for currently rendered products
@@ -255,7 +289,7 @@ useEffect(()=>{
       {orderBanner && (
         <div className="mb-3 text-sm text-green-700 bg-green-50 border border-green-200 rounded px-3 py-2">
           We received your order {orderBanner.id}. We will get in touch shortly.
-          <button className="float-right text-green-700" onClick={()=>setOrderBanner(null)}>×</button>
+          <button className="float-right text-green-700" onClick={dismissOrderBanner}>×</button>
         </div>
       )}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -431,8 +465,13 @@ useEffect(()=>{
             <div className="px-4 py-3 border-b bg-white sticky top-0 z-10">
               {phone ? (
                 <div className="flex gap-2">
-                  <Button className="shrink-0 flex items-center justify-center gap-2 w-full" onClick={()=>sendOrder(phone)}>
-                    <Phone className="h-4 w-4"/>Send Order
+                  <Button
+                    className="shrink-0 flex items-center justify-center gap-2 w-full"
+                    onClick={()=>sendOrder(phone)}
+                    disabled={orderSending}
+                  >
+                    {orderSending ? <Loader2 className="h-4 w-4 animate-spin"/> : <Phone className="h-4 w-4"/>}
+                    {orderSending ? 'Sending...' : 'Send Order'}
                   </Button>
                 </div>
               ) : (
@@ -445,9 +484,15 @@ useEffect(()=>{
                     onFocus={(e)=>{ e.currentTarget.select(); e.currentTarget.scrollIntoView({ block: 'center' }); }}
                     placeholder="Your WhatsApp (+91...)"
                     className="text-base"
+                    disabled={orderSending}
                   />
-                  <Button className="shrink-0 flex items-center justify-center gap-2" onClick={()=>{ const v=(custPhoneMobile||"").trim(); if(!v) return toast.error("Enter WhatsApp number"); setPhone(v); localStorage.setItem('ac_phone', v); sendOrder(v); }}>
-                    <Phone className="h-4 w-4"/>Send Order
+                  <Button
+                    className="shrink-0 flex items-center justify-center gap-2"
+                    onClick={()=>{ const v=(custPhoneMobile||"").trim(); if(!v) return toast.error("Enter WhatsApp number"); setPhone(v); localStorage.setItem('ac_phone', v); sendOrder(v); }}
+                    disabled={orderSending}
+                  >
+                    {orderSending ? <Loader2 className="h-4 w-4 animate-spin"/> : <Phone className="h-4 w-4"/>}
+                    {orderSending ? 'Sending...' : 'Send Order'}
                   </Button>
                 </div>
               )}

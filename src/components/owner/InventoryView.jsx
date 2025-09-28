@@ -190,7 +190,15 @@ export default function InventoryView({ products, setProducts }){
             const badgeVariant = status === 'processing' ? 'secondary' : status === 'failed' ? 'destructive' : 'outline';
             return (
               <div key={p.id} className="border rounded-xl overflow-hidden">
-                <img src={p.images?.[0]} alt={p.title} loading="lazy" decoding="async" sizes="(max-width: 1024px) 50vw, 33vw" className="h-48 w-full object-cover"/>
+                <img
+                  src={p.images?.[0]}
+                  alt={p.title}
+                  loading="lazy"
+                  decoding="async"
+                  sizes="(max-width: 1024px) 50vw, 33vw"
+                  className="h-48 w-full object-cover cursor-pointer"
+                  onClick={()=>openEdit(p)}
+                />
                 <div className="p-3 space-y-2">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-medium line-clamp-1 text-sm text-neutral-800">{p.title}</span>

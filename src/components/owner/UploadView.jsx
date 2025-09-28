@@ -23,11 +23,16 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
   const [submitted, setSubmitted] = useState(false);
   const [showDesc, setShowDesc] = useState(editing ? false : true);
   const [shouldAutoMeta, setShouldAutoMeta] = useState(!editing);
+  const [metaTouched, setMetaTouched] = useState(false);
   const existingStatus = (existing?.status || 'ready').toLowerCase();
   const statusLabel = existingStatus === 'processing' ? 'Processing' : existingStatus === 'failed' ? 'Failed' : 'Ready';
   // Persist draft for non-editing flow so progress survives reloads
   const DRAFT_KEY = 'upload_draft_v1';
   // Load draft once for new upload
+  useEffect(()=>{
+    setMetaTouched(false);
+  }, [editing, existing?.id]);
+
   useEffect(()=>{
     if (editing) return;
     try{
@@ -88,6 +93,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
     const files = Array.from(fs || []);
     if (!files.length) return;
     try{
+      const prevCount = images.length;
       const resized = [];
       for (const file of files){
         const dataUrl = await b64FromFile(file, { maxDimension: 1600, quality: 0.82 });
@@ -96,8 +102,8 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
       const nextImages = [...images, ...resized];
       setImages(nextImages);
 
-      const shouldRun = (!editing) || shouldAutoMeta;
-      if (shouldRun && nextImages.length){
+      const shouldRun = !metaTouched && nextImages.length > 0 && (prevCount === 0 || shouldAutoMeta);
+      if (shouldRun){
         let aiPreview = resized[0] || nextImages[0];
         if (files[0]){
           try {
@@ -125,13 +131,16 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
     }
     if (index === 0){
       if (next.length){
-        try {
-          await runAIMetadata(next[0]);
-        } catch (err) {
-          console.error(err);
+        if (!metaTouched){
+          try {
+            await runAIMetadata(next[0]);
+          } catch (err) {
+            console.error(err);
+          }
         }
       } else {
         setShouldAutoMeta(true);
+        setMetaTouched(false);
       }
     }
   }
@@ -179,6 +188,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
         setCategory("");
         setSubmitted(false);
         setShouldAutoMeta(true);
+        setMetaTouched(false);
         clearDraft();
       }
   }catch(e){ console.error(e); toast.error(e?.message || "Save failed"); }
@@ -248,7 +258,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
           <div className={aiLoading ? 'opacity-60 pointer-events-none' : ''}>
             <Label>Category & Qty</Label>
             <div className="grid grid-cols-2 gap-2">
-              <Select value={category} onValueChange={setCategory} disabled={aiLoading}>
+              <Select value={category} onValueChange={(val)=>{ setCategory(val); setMetaTouched(true); }} disabled={aiLoading}>
                 <SelectTrigger><SelectValue placeholder="Category" /></SelectTrigger>
                 <SelectContent>{SHOPIFY_CATEGORIES.map((c)=> <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
               </Select>
@@ -260,7 +270,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
           {/* Title */}
           <div className={aiLoading ? 'opacity-60 pointer-events-none' : ''}>
             <Label>Title (10–12 words)</Label>
-            <Input value={title} onChange={(e)=>setTitle(e.target.value)} placeholder="Elegant kundan earrings for festive wear" disabled={aiLoading} className={submitted && errors.title ? "border-red-300" : ""} />
+            <Input value={title} onChange={(e)=>{ setTitle(e.target.value); setMetaTouched(true); }} placeholder="Elegant kundan earrings for festive wear" disabled={aiLoading} className={submitted && errors.title ? "border-red-300" : ""} />
             {submitted && errors.title && (
               <div className="text-xs text-red-600 mt-1">{errors.title}</div>
             )}
@@ -278,7 +288,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
             </div>
             {(!editing || showDesc) && (
               <>
-                <Textarea value={description} onChange={(e)=>setDescription(e.target.value)} rows={3} disabled={aiLoading} className={submitted && errors.description ? "border-red-300" : ""} />
+                <Textarea value={description} onChange={(e)=>{ setDescription(e.target.value); setMetaTouched(true); }} rows={3} disabled={aiLoading} className={submitted && errors.description ? "border-red-300" : ""} />
                 {submitted && errors.description && (
                   <div className="text-xs text-red-600 mt-1">{errors.description}</div>
                 )}

@@ -1,12 +1,44 @@
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { MessageCircle, Trash2, CheckCircle2 } from "lucide-react";
+import { MessageCircle, Trash2, CheckCircle2, Loader2 } from "lucide-react";
 import { waLink } from "../../shared";
 
 export default function OrderRow({ order, products, ownerPhone, onRemove, onConfirm }){
   const items = order.items.map(id=>products.find(p=>p.id===id)).filter(Boolean);
   const message = `Hello, I am following up on shortlist ${order.id}. Could we confirm availability and pricing?`;
   const chatUrl = waLink(order.customer_phone, message);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+
+  const handleChat = () => {
+    if (chatBusy) return;
+    setChatBusy(true);
+    try {
+      const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+      const isMobile = /Mobi|Android|iPhone|iPad/i.test(ua);
+      if (isMobile) {
+        window.location.href = chatUrl;
+      } else {
+        const popup = window.open(chatUrl, '_blank');
+        if (!popup) { window.location.href = chatUrl; }
+      }
+    } finally {
+      setTimeout(() => setChatBusy(false), 1200);
+    }
+  };
+
+  const handleConfirm = async () => {
+    if (confirmBusy) return;
+    setConfirmBusy(true);
+    try {
+      await onConfirm();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setConfirmBusy(false);
+    }
+  };
 
   return (
     <div className="border rounded-xl p-3">
@@ -26,10 +58,23 @@ export default function OrderRow({ order, products, ownerPhone, onRemove, onConf
         ))}
       </div>
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 mt-3">
-        <Button className="w-full sm:w-auto" variant="outline" asChild>
-          <a href={chatUrl} target="_blank" rel="noreferrer"><MessageCircle className="mr-2 h-4 w-4"/>Chat on WhatsApp</a>
+        <Button
+          className="w-full sm:w-auto flex items-center justify-center gap-2"
+          variant="outline"
+          onClick={handleChat}
+          disabled={chatBusy}
+        >
+          {chatBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <MessageCircle className="h-4 w-4"/>}
+          {chatBusy ? 'Opening...' : 'Chat on WhatsApp'}
         </Button>
-        <Button className="w-full sm:w-auto" onClick={onConfirm}><CheckCircle2 className="mr-2 h-4 w-4"/>Confirm Order</Button>
+        <Button
+          className="w-full sm:w-auto flex items-center justify-center gap-2"
+          onClick={handleConfirm}
+          disabled={confirmBusy}
+        >
+          {confirmBusy ? <Loader2 className="h-4 w-4 animate-spin"/> : <CheckCircle2 className="h-4 w-4"/>}
+          {confirmBusy ? 'Confirming...' : 'Confirm Order'}
+        </Button>
       </div>
     </div>
   );
