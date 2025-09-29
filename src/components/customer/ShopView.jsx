@@ -433,7 +433,7 @@ useEffect(()=>{
                   <div className="flex flex-wrap gap-2 text-xs sm:text-sm">
                     <Badge variant="outline">{p.category}</Badge>
                     {styleLabel && (
-                      <Badge variant="secondary" className="bg-neutral-100 text-neutral-700">
+                      <Badge variant="outline" className="bg-neutral-100 text-neutral-700">
                         {styleLabel}
                       </Badge>
                     )}

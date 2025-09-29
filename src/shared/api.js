@@ -18,13 +18,18 @@ async function apiFetch(url, options = {}){
   if (!('cache' in opts)) {
     opts.cache = 'no-store';
   }
-  const r = await fetch(url, opts);
+  let r;
+  try {
+    r = await fetch(url, opts);
+  } catch (err) {
+    throw new Error(`[ACNET-001] Network error contacting API: ${err?.message || String(err)}`);
+  }
   if (r.status === 401) {
     try { localStorage.removeItem('admin_token'); } catch {}
     if (typeof window !== 'undefined' && window.location && window.location.pathname.includes('/owner')) {
       window.location.reload();
     }
-    throw new Error('unauthorized');
+    throw new Error('[ACAUTH-401] unauthorized');
   }
   return r;
 }
@@ -124,7 +129,7 @@ export async function createProduct(p){
   if (!r.ok) {
     let msg = "create product failed";
     try { msg = (await r.text()) || msg; } catch {}
-    throw new Error(msg);
+    throw new Error(`[ACHTTP-${r.status}] ${msg}`);
   }
   return await r.json();
 }
@@ -138,7 +143,7 @@ export async function updateProduct(p){
   if (!r.ok) {
     let msg = "update product failed";
     try { msg = (await r.text()) || msg; } catch {}
-    throw new Error(msg);
+    throw new Error(`[ACHTTP-${r.status}] ${msg}`);
   }
   return await r.json();
 }

@@ -94,6 +94,17 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
       if (meta.style_tag){
         setStyleTag(normalizeStyleTag(meta.style_tag));
       }
+    } catch (err) {
+      console.error(err);
+      const msg = err?.message || 'AI describe failed';
+      toast.error(msg, {
+        duration: 20000,
+        action: {
+          label: 'Copy',
+          onClick: () => { try { navigator.clipboard.writeText(String(msg)); toast.success('Error copied'); } catch {}
+          }
+        }
+      });
     } finally {
       setAiLoading(false);
       setShouldAutoMeta(false);
@@ -127,7 +138,8 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
       }
     }catch(err){
       console.error(err);
-      toast.error('Failed to process image');
+      const msg = 'Failed to process image';
+      toast.error(msg, { duration: 15000 });
     }
   }
 
@@ -204,7 +216,18 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
         setMetaTouched(false);
         clearDraft();
       }
-  }catch(e){ console.error(e); toast.error(e?.message || "Save failed"); }
+  }catch(e){
+    console.error(e);
+    const msg = `Save failed: ${e?.message || 'Unknown error'}`;
+    toast.error(msg, {
+      duration: 20000,
+      action: {
+        label: 'Copy',
+        onClick: () => { try { navigator.clipboard.writeText(String(msg)); toast.success('Error copied'); } catch {}
+        }
+      }
+    });
+  }
   finally { setSaving(false); }
   }
 

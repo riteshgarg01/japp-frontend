@@ -16,9 +16,14 @@ export async function fetchAIMetadata(imageUrls = []){
         payload.style_tag = normalizeStyleTag(payload.style_tag);
       }
       return payload;
+    } else {
+      let bodyText = '';
+      try { bodyText = await res.text(); } catch {}
+      throw new Error(`[AIHTTP-${res.status}] ${bodyText || 'AI describe failed'}`);
     }
-  }catch{}
-  return fallbackSuggestMeta(imageUrls);
+  }catch(err){
+    throw new Error(`[AINET-001] AI describe network error: ${err?.message || String(err)}`);
+  }
 }
 
 export function fallbackSuggestMeta(fileNames = []){
