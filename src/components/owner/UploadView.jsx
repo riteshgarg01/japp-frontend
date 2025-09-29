@@ -8,13 +8,14 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Image as ImageIcon, Plus, Sparkles, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { SHOPIFY_CATEGORIES, makeProductId, b64FromFile, fetchAIMetadata, createProduct as apiCreateProduct, updateProduct as apiUpdateProduct } from "../../shared";
+import { SHOPIFY_CATEGORIES, makeProductId, b64FromFile, fetchAIMetadata, createProduct as apiCreateProduct, updateProduct as apiUpdateProduct, normalizeStyleTag } from "../../shared";
 
 export default function UploadView({ onAddProduct, editing, existing, onSaveEdit, onCancel }){
   const [images, setImages] = useState(existing?.images || []);
   const [category, setCategory] = useState(existing?.category || SHOPIFY_CATEGORIES[0]);
   const [title, setTitle] = useState(existing?.title || "");
   const [description, setDescription] = useState(existing?.description || "");
+  const [styleTag, setStyleTag] = useState(existing?.style_tag || "");
   const [price, setPrice] = useState(existing?.price || 0);
   const [cost, setCost] = useState(existing?.cost || 0);
   const [qty, setQty] = useState(existing?.qty ?? 1);
@@ -34,6 +35,12 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
   }, [editing, existing?.id]);
 
   useEffect(()=>{
+    if (editing){
+      setStyleTag(existing?.style_tag || "");
+    }
+  }, [editing, existing?.style_tag]);
+
+  useEffect(()=>{
     if (editing) return;
     try{
       const raw = localStorage.getItem(DRAFT_KEY);
@@ -47,6 +54,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
         setPrice(d.price||0);
         setCost(d.cost||0);
         setQty(d.qty??1);
+        setStyleTag(d.style_tag||'');
       }
     }catch{}
   }, []);
@@ -54,10 +62,10 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
   useEffect(()=>{
     if (editing) return;
     try{
-      const d = { images, category, title, description, price, cost, qty };
+      const d = { images, category, title, description, price, cost, qty, style_tag: styleTag };
       localStorage.setItem(DRAFT_KEY, JSON.stringify(d));
     }catch{}
-  }, [editing, images, category, title, description, price, cost, qty]);
+  }, [editing, images, category, title, description, price, cost, qty, styleTag]);
   function clearDraft(){ try{ localStorage.removeItem(DRAFT_KEY); }catch{} }
   const errors = useMemo(()=>{
     const errs = {};
@@ -83,6 +91,9 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
       setCategory(meta.category);
       setTitle(meta.title);
       setDescription(meta.description);
+      if (meta.style_tag){
+        setStyleTag(normalizeStyleTag(meta.style_tag));
+      }
     } finally {
       setAiLoading(false);
       setShouldAutoMeta(false);
@@ -157,6 +168,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
       title: title.trim(),
       description: description.trim(),
       category,
+      style_tag: normalizeStyleTag(styleTag) || null,
       price: Math.round(Number(price)),
       cost: Math.max(0, Math.floor(Number(cost)||0)),
       qty: Math.max(0, Math.floor(Number(qty)||0)),
@@ -186,6 +198,7 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
         setCost(0);
         setQty(1);
         setCategory("");
+        setStyleTag("");
         setSubmitted(false);
         setShouldAutoMeta(true);
         setMetaTouched(false);

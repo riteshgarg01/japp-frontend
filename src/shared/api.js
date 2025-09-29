@@ -34,6 +34,7 @@ const toProductIn = (p) => ({
   title: p.title,
   description: p.description,
   category: p.category,
+  style_tag: p.style_tag ?? null,
   price: Math.round(Number(p.price)||0),
   cost: Math.max(0, Math.floor(Number(p.cost||0))),
   qty: Math.max(0, Math.floor(Number(p.qty)||0)),

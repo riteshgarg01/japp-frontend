@@ -1,4 +1,5 @@
 import { API_BASE } from "./config.js";
+import { normalizeStyleTag, JEWELLERY_STYLE_OPTIONS } from "./jewelryTypes.js";
 
 const NGROK_HEADERS = API_BASE.includes("ngrok-free.app") ? { "ngrok-skip-browser-warning": "true" } : {};
 
@@ -9,7 +10,13 @@ export async function fetchAIMetadata(imageUrls = []){
       headers: { "Content-Type": "application/json", ...NGROK_HEADERS },
       body: JSON.stringify({ image_urls: imageUrls }),
     });
-    if (res.ok) return await res.json();
+    if (res.ok){
+      const payload = await res.json();
+      if (payload && typeof payload === 'object'){
+        payload.style_tag = normalizeStyleTag(payload.style_tag);
+      }
+      return payload;
+    }
   }catch{}
   return fallbackSuggestMeta(imageUrls);
 }
@@ -25,10 +32,11 @@ export function fallbackSuggestMeta(fileNames = []){
   else if (/nose/.test(text)) category = "Nose Pins";
   else if (/anklet|payal/.test(text)) category = "Anklets";
   const adjectives = ["Handcrafted","Minimalist","Elegant","Festive","Everyday","Heritage","Modern","Classic"];
-  const materials  = ["gold-tone","silver-tone","oxidized","kundan","pearl","polki","american diamond","meenakari"];
+  const materials  = ["gold-tone","silver-tone","oxidized","kundan","pearl","polki","american diamond","meenakari","temple","beaded"];
   const adj = adjectives[Math.floor(Math.random()*adjectives.length)];
   const mat = materials[Math.floor(Math.random()*materials.length)];
   const title = `${adj} ${mat} ${category.toLowerCase()}`.slice(0,80);
   const description = `A ${adj.toLowerCase()} ${category.toLowerCase()} crafted with ${mat} detailing. Perfect for weddings, festive wear, and everyday styling. Lightweight finish.`.slice(0,300);
-  return { category, title, description };
+  const styleGuess = normalizeStyleTag(mat) || JEWELLERY_STYLE_OPTIONS[0];
+  return { category, title, description, style_tag: styleGuess };
 }

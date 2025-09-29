@@ -10,12 +10,13 @@ import { Switch } from "@/components/ui/switch";
 import { ShoppingCart, Filter, Phone, Image as ImageIcon, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged, getProductImages, getOrdersBySession, trackEvent } from "../../shared";
+import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged, getProductImages, getOrdersBySession, trackEvent, normalizeStyleTag, JEWELLERY_STYLE_OPTIONS } from "../../shared";
 // ShortlistSheet not used in full-screen view anymore
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 const ORDER_BANNER_DISMISS_KEY = "ac_order_banner_dismissed";
 export default function ShopView({ products, onOrderCreate, ownerPhone, isLoading }){
   const [cat, setCat] = useState("All");
+  const [styleFilter, setStyleFilter] = useState("All");
   const [priceRange, setPriceRange] = useState([0, 20000]);
   const [q, setQ] = useState("");
   const [shortlist, setShortlist] = useState(()=>{
@@ -79,17 +80,61 @@ useEffect(()=>{
   const [loadingMore, setLoadingMore] = useState(false);
   const fetchedOffsetsRef = useRef(new Set());
 
+  const aggregateProducts = useMemo(()=>{
+    const map = new Map();
+    (products || []).forEach((item)=>{ if (item?.id) map.set(item.id, { ...item }); });
+    catalog.forEach((item)=>{ if (!item?.id) return; map.set(item.id, { ...(map.get(item.id) || {}), ...item }); });
+    return Array.from(map.values());
+  }, [products, catalog]);
+
   const cats = useMemo(()=>{
-    const set = new Set(catalog.map(p=> p.category));
-    return ["All", ...Array.from(set)];
-  }, [catalog]);
-  const maxPrice = useMemo(()=>Math.max(5000, ...catalog.map(p=>p.price)), [catalog]);
-  useEffect(()=>{ if (priceRange[1] < maxPrice) setPriceRange([0, maxPrice]); }, [maxPrice]);
+    const set = new Set();
+    aggregateProducts.forEach(p=>{ if (p?.category) set.add(p.category); });
+    return ["All", ...Array.from(set).sort()];
+  }, [aggregateProducts]);
+
+  const styleOptions = useMemo(()=>{
+    const present = new Set();
+    aggregateProducts.forEach(p=>{
+      const label = normalizeStyleTag(p?.style_tag);
+      if (label) present.add(label);
+    });
+    const ordered = JEWELLERY_STYLE_OPTIONS.filter(opt=>present.has(opt));
+    const extras = Array.from(present).filter(opt=>!JEWELLERY_STYLE_OPTIONS.includes(opt)).sort();
+    if (ordered.length === 0 && extras.length === 0) return ["All"];
+    return ["All", ...ordered, ...extras];
+  }, [aggregateProducts]);
+
+  useEffect(()=>{
+    if (styleFilter !== "All" && !styleOptions.includes(styleFilter)){
+      setStyleFilter("All");
+    }
+  }, [styleOptions, styleFilter]);
+
+  const priceSliderMax = useMemo(()=>{
+    const values = aggregateProducts.map(p=>Number(p?.price)||0);
+    return Math.max(5000, ...values, 0);
+  }, [aggregateProducts]);
+
+  useEffect(()=>{
+    setPriceRange(prev=>{
+      if (prev[0] === 0 && prev[1] === 20000){
+        return [0, priceSliderMax];
+      }
+      if (prev[1] > priceSliderMax){
+        return [Math.min(prev[0], priceSliderMax), priceSliderMax];
+      }
+      return prev;
+    });
+  }, [priceSliderMax]);
 
   const filtered = catalog.filter(p => {
     const isAvailable = (p.available && (p.qty||0) > 0);
+    const styleLabel = normalizeStyleTag(p.style_tag);
+    const styleMatches = styleFilter === "All" || (styleLabel && styleLabel === styleFilter);
     return (
       (cat === "All" || p.category === cat) &&
+      styleMatches &&
       (!hideUnavailable || isAvailable) &&
       p.price >= priceRange[0] && p.price <= priceRange[1] &&
       (q.trim()==="" || p.title.toLowerCase().includes(q.toLowerCase()) || p.description.toLowerCase().includes(q.toLowerCase()))
@@ -102,7 +147,7 @@ useEffect(()=>{
     setCatalog([]);
     setTotal(0);
     setNextOffset(0);
-  }, [cat, priceRange, q, hideUnavailable]);
+  }, [cat, priceRange, q, hideUnavailable, styleFilter]);
 
   // Fetch page function
   async function fetchPage(limit, offset){
@@ -116,6 +161,7 @@ useEffect(()=>{
       min_price: priceRange[0] || 0,
       max_price: priceRange[1] || undefined,
       only_available: hideUnavailable || undefined,
+      style_tag: styleFilter === 'All' ? undefined : styleFilter,
     };
     const data = await listProductsPaged(params);
     setCatalog(prev=>{
@@ -151,7 +197,7 @@ useEffect(()=>{
   useEffect(()=>{
     fetchedOffsetsRef.current.clear();
     fetchPage(10, 0).catch(()=>{});
-  }, [cat, priceRange[0], priceRange[1], q, hideUnavailable]);
+  }, [cat, priceRange[0], priceRange[1], q, hideUnavailable, styleFilter]);
 
   function toggleShortlist(id){
     setShortlist(sl => {
@@ -314,6 +360,7 @@ useEffect(()=>{
         )}
         {!loading && filtered.slice(0, displayCount).map((p) => {
           const isAvailable = (p.available && (p.qty||0) > 0);
+          const styleLabel = normalizeStyleTag(p.style_tag);
           return (
             <motion.div key={p.id} initial={{opacity:0, y:8}} animate={{opacity:1, y:0}}>
               <Card className="shadow-sm overflow-hidden">
@@ -382,9 +429,16 @@ useEffect(()=>{
                     </CardDescription>
                   )}
                 </CardHeader>
-                <CardContent className="flex items-center justify-between py-2">
-                  <Badge variant="outline">{p.category}</Badge>
-                  <div className="font-semibold">{fmt(p.price)}</div>
+                <CardContent className="flex items-center justify-between py-2 gap-3">
+                  <div className="flex flex-wrap gap-2 text-xs sm:text-sm">
+                    <Badge variant="outline">{p.category}</Badge>
+                    {styleLabel && (
+                      <Badge variant="secondary" className="bg-neutral-100 text-neutral-700">
+                        {styleLabel}
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="font-semibold whitespace-nowrap">{fmt(p.price)}</div>
                 </CardContent>
                 <CardFooter className="block">
                   <Button className="w-full flex items-center justify-center gap-2" size="sm" disabled={!isAvailable} variant={isAvailable ? (isInCart(p.id)?"secondary":"default") : "secondary"} onClick={()=>toggleShortlist(p.id)}>
@@ -414,9 +468,20 @@ useEffect(()=>{
               </Select>
             </div>
             <div>
+              <Label>Jewellery Style</Label>
+              <Select value={styleFilter} onValueChange={setStyleFilter}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {styleOptions.map(style=> (
+                    <SelectItem key={style} value={style}>{style}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
               <Label>Price Range</Label>
               <div className="py-2">
-                <Slider value={priceRange} onValueChange={setPriceRange} min={0} max={maxPrice} step={100} />
+                <Slider value={priceRange} onValueChange={setPriceRange} min={0} max={priceSliderMax} step={100} />
                 <div className="text-sm text-neutral-600 mt-2">{fmt(priceRange[0])} – {fmt(priceRange[1])}</div>
               </div>
             </div>
