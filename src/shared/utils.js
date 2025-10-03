@@ -129,19 +129,32 @@ export function mapToShopCategory(cat){
 }
 
 // Format like: "1 Jan, 2025 5:30 pm"
+const IST_FORMAT_OPTIONS = Object.freeze({
+  timeZone: 'Asia/Kolkata',
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  hour12: true,
+});
+
 export function formatDateTime(s){
   if (!s) return '';
   try{
-    const d = new Date(s);
-    if (isNaN(d.getTime())) return String(s);
-    const day = d.getDate();
-    const month = d.toLocaleString('en-GB', { month: 'short' });
-    const year = d.getFullYear();
-    let hours = d.getHours();
-    const minutes = d.getMinutes().toString().padStart(2,'0');
-    const ampm = hours >= 12 ? 'pm' : 'am';
-    hours = hours % 12; if (hours === 0) hours = 12;
-    return `${day} ${month}, ${year} ${hours}:${minutes} ${ampm}`;
+    const raw = String(s).trim();
+    if (!raw) return '';
+    let normalized = raw;
+    if (!normalized.includes('T')){
+      normalized = normalized.replace(' ', 'T');
+    }
+    const hasTimezone = /[zZ]$/i.test(normalized) || /[+-]\d{2}:?\d{2}$/.test(normalized);
+    if (!hasTimezone){
+      normalized = `${normalized}Z`;
+    }
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) return raw;
+    return new Intl.DateTimeFormat('en-IN', IST_FORMAT_OPTIONS).format(date);
   }catch{
     return String(s);
   }

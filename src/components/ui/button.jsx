@@ -7,6 +7,7 @@ export function Button({ variant="default", size="md", className, asChild, child
     default: "bg-neutral-900 text-white hover:bg-neutral-800",
     secondary: "bg-neutral-100 text-neutral-900 hover:bg-neutral-200",
     outline: "border border-neutral-300 bg-white hover:bg-neutral-50",
+    destructive: "bg-red-600 text-white hover:bg-red-700",
     ghost: "hover:bg-neutral-100",
   };
   const sizes = {

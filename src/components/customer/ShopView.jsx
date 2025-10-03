@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,10 +10,11 @@ import { Switch } from "@/components/ui/switch";
 import { ShoppingCart, Filter, Phone, Image as ImageIcon, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, listProductsPaged, getProductImages, getOrdersBySession, trackEvent, normalizeStyleTag, JEWELLERY_STYLE_OPTIONS } from "../../shared";
+import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, notifyOwnerByEmail, listProductsPaged, getProductImages, getOrdersBySession, getCart, syncCart, trackEvent, normalizeStyleTag, JEWELLERY_STYLE_OPTIONS } from "../../shared";
 // ShortlistSheet not used in full-screen view anymore
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 const ORDER_BANNER_DISMISS_KEY = "ac_order_banner_dismissed";
+const CONFIRMED_BANNER_SEEN_KEY = "ac_confirmed_banner_seen";
 export default function ShopView({ products, onOrderCreate, ownerPhone, isLoading }){
   const [cat, setCat] = useState("All");
   const [styleFilter, setStyleFilter] = useState("All");
@@ -37,6 +38,8 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const fetchedIdsRef = useRef(new Set());
   const [descExpanded, setDescExpanded] = useState(new Set());
   const touchRef = useRef({ startX: 0, startY: 0, t: 0 });
+  const initialShortlistRef = useRef(shortlist);
+  const cartBootstrappedRef = useRef(false);
 
   // lightweight session + phone persistence
   const [sessionId, setSessionId] = useState(()=> localStorage.getItem('ac_session_id') || `sess-${Math.random().toString(36).slice(2,8)}-${Date.now().toString(36)}`);
@@ -50,14 +53,40 @@ useEffect(()=>localStorage.setItem("ac_shortlist", JSON.stringify(shortlist)), [
 useEffect(()=>{ localStorage.setItem('ac_session_id', sessionId); }, [sessionId]);
 useEffect(()=>{ if (phone) localStorage.setItem('ac_phone', phone); }, [phone]);
 
+  const syncCartToServer = useCallback(async (items, fallbackList = null, overrides = {}) => {
+    const effectivePhone = overrides.phone ?? phone;
+    const effectiveSession = overrides.sessionId ?? sessionId;
+    const phoneClean = (effectivePhone || '').trim();
+    if (!effectiveSession || !phoneClean) {
+      return;
+    }
+    const uniqueItems = Array.from(new Set(items || []));
+    try {
+      const order = await syncCart(uniqueItems, effectiveSession, phoneClean);
+      const serverItems = Array.isArray(order?.items) ? Array.from(new Set(order.items)) : uniqueItems;
+      const same = serverItems.length === uniqueItems.length && serverItems.every((val, idx) => val === uniqueItems[idx]);
+      initialShortlistRef.current = serverItems;
+      if (!same) {
+        setShortlist(serverItems);
+      }
+    } catch (err) {
+      console.error(err);
+      if (Array.isArray(fallbackList)) {
+        setShortlist(fallbackList);
+        initialShortlistRef.current = fallbackList;
+      }
+      toast.error("Failed to update shortlist");
+    }
+  }, [phone, sessionId]);
+
 // show last order banner (best-effort) when returning
 useEffect(()=>{
   (async ()=>{
     try{
       const sid = localStorage.getItem('ac_session_id');
       if (!sid) return;
-      const data = await getOrdersBySession(sid, 1);
-      const last = (data.items||[])[0];
+      const data = await getOrdersBySession(sid, 10);
+      const last = (data.items||[]).find(it=> (it.status||'').toLowerCase() === 'confirmed');
       if (!last) return;
       let dismissedId = null;
       try {
@@ -68,7 +97,17 @@ useEffect(()=>{
         }
       } catch {}
       if (dismissedId === last.id) return;
-      setOrderBanner({ id: last.id, when: last.created_at });
+      let seenId = null;
+      try {
+        const rawSeen = localStorage.getItem(CONFIRMED_BANNER_SEEN_KEY);
+        if (rawSeen){
+          const parsedSeen = JSON.parse(rawSeen);
+          seenId = typeof parsedSeen === 'string' ? parsedSeen : parsedSeen?.id ?? null;
+        }
+      } catch {}
+      if (seenId === last.id) return;
+      setOrderBanner({ id: last.id, when: last.confirmed_at || last.updated_at || last.created_at });
+      try { localStorage.setItem(CONFIRMED_BANNER_SEEN_KEY, JSON.stringify(last.id)); } catch {}
     }catch{}
   })();
 }, []);
@@ -200,15 +239,20 @@ useEffect(()=>{
   }, [cat, priceRange[0], priceRange[1], q, hideUnavailable, styleFilter]);
 
   function toggleShortlist(id){
-    setShortlist(sl => {
-      const has = sl.includes(id);
-      if (!has && !phone){ setPendingAddId(id); setPhoneModal(true); return sl; }
-      const next = has ? sl.filter(x=>x!==id) : [...sl, id];
-      try{
-        trackEvent(has ? "remove_from_cart" : "add_to_cart", { product_id: id });
-      }catch{}
-      return next;
-    });
+    const trimmedPhone = (phone || '').trim();
+    if (!trimmedPhone){
+      setPendingAddId(id);
+      setPhoneModal(true);
+      return;
+    }
+    const has = shortlist.includes(id);
+    const nextList = has ? shortlist.filter(x => x !== id) : [...shortlist, id];
+    if (has && nextList.length === shortlist.length) return;
+    setShortlist(nextList);
+    syncCartToServer(nextList, shortlist);
+    try {
+      trackEvent(has ? 'remove_from_cart' : 'add_to_cart', { product_id: id });
+    } catch {}
   }
   function isInCart(id){ return shortlist.includes(id); }
 
@@ -247,6 +291,60 @@ useEffect(()=>{
     });
   };
 
+  useEffect(()=>{
+    const phoneClean = (phone || '').trim();
+    if (!sessionId || !phoneClean || cartBootstrappedRef.current) return;
+    cartBootstrappedRef.current = true;
+    let cancelled = false;
+    (async ()=>{
+      try{
+        const serverCart = await getCart(sessionId, phoneClean);
+        if (cancelled) return;
+        if (serverCart && Array.isArray(serverCart.items)){
+          const normalized = Array.from(new Set(serverCart.items));
+          initialShortlistRef.current = normalized;
+          setShortlist(normalized);
+        } else if (shortlist.length){
+          initialShortlistRef.current = [];
+          setShortlist([]);
+          try{ localStorage.setItem('ac_shortlist', '[]'); }catch{}
+        }
+      }catch(err){
+        if (!cancelled){
+          console.warn('Cart bootstrap failed', err);
+        }
+      }
+    })();
+    return ()=>{ cancelled = true; };
+  }, [sessionId, phone, syncCartToServer, shortlist.length]);
+
+  useEffect(()=>{
+    if (!shortlistOpen) return;
+    const phoneClean = (phone || '').trim();
+    if (!sessionId || !phoneClean) return;
+    let cancelled = false;
+    (async ()=>{
+      try{
+        const serverCart = await getCart(sessionId, phoneClean);
+        if (cancelled) return;
+        if (serverCart && Array.isArray(serverCart.items)){
+          const normalized = Array.from(new Set(serverCart.items));
+          initialShortlistRef.current = normalized;
+          setShortlist(normalized);
+        } else if (shortlist.length){
+          initialShortlistRef.current = [];
+          setShortlist([]);
+          try{ localStorage.setItem('ac_shortlist', '[]'); }catch{}
+        }
+      }catch(err){
+        if (!cancelled){
+          console.warn('Cart refresh failed', err);
+        }
+      }
+    })();
+    return ()=>{ cancelled = true; };
+  }, [shortlistOpen, sessionId, phone, shortlist.length]);
+
   async function sendOrder(phoneVal){
     if (!shortlist.length){
       toast.error("Shortlist is empty");
@@ -262,8 +360,17 @@ useEffect(()=>{
         popup = window.open('', '_blank');
       }
       const created = await apiCreateOrder(shortlist, phoneVal, sessionId);
+
+      // 🔔 Send owner an email (non-blocking)
+      notifyOwnerByEmail({
+        orderId: created.id,
+        items: created.items || [],
+        customerPhone: phoneVal
+      });  
+      
       onOrderCreate(created);
       setShortlist([]);
+      initialShortlistRef.current = [];
       toast.success("Order request sent");
       try{ trackEvent('send_order', { order_id: created.id, items: created.items?.length||0 }); }catch{}
       const msg = `New order request ${created.id}\nItems: ${created.items.join(", ")}\nCustomer: ${phoneVal}`;
@@ -277,7 +384,10 @@ useEffect(()=>{
       }
       setShortlistOpen(false);
       localStorage.setItem('ac_last_order_id', created.id);
-      try{ localStorage.removeItem(ORDER_BANNER_DISMISS_KEY); }catch{}
+      try{
+        localStorage.removeItem(ORDER_BANNER_DISMISS_KEY);
+        localStorage.removeItem(CONFIRMED_BANNER_SEEN_KEY);
+      }catch{}
     }catch(e){
       console.error(e);
       if (popup && !popup.closed) { try{ popup.close(); }catch{} }
@@ -507,7 +617,22 @@ useEffect(()=>{
             <Input value={phone} onChange={(e)=>setPhone(e.target.value)} placeholder="e.g. 8884024446" inputMode="tel" />
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={()=>setPhoneModal(false)}>Cancel</Button>
-              <Button onClick={()=>{ if(!phone.trim()) return; const v=phone.trim(); localStorage.setItem('ac_phone', v); setPhone(v); setPhoneModal(false); if (pendingAddId){ setShortlist(sl=> sl.includes(pendingAddId)? sl : [...sl, pendingAddId]); try{ trackEvent('add_to_cart', { product_id: pendingAddId }); }catch{} setPendingAddId(null); } }}>Save</Button>
+              <Button onClick={()=>{
+                if(!phone.trim()) return;
+                const v = phone.trim();
+                localStorage.setItem('ac_phone', v);
+                setPhone(v);
+                setPhoneModal(false);
+                if (pendingAddId){
+                  if (!shortlist.includes(pendingAddId)){
+                    const nextList = [...shortlist, pendingAddId];
+                    setShortlist(nextList);
+                    try{ trackEvent('add_to_cart', { product_id: pendingAddId }); }catch{}
+                    syncCartToServer(nextList, shortlist, { phone: v, sessionId });
+                  }
+                  setPendingAddId(null);
+                }
+              }}>Save</Button>
             </div>
           </div>
         </DialogContent>

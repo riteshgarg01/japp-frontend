@@ -18,6 +18,7 @@ export default defineConfig({
       '/ai':              { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/config':          { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/health':          { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/cart':            { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
 })

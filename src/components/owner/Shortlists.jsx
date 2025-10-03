@@ -4,10 +4,34 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Eye, MessageCircle, CheckCircle2, Plus } from "lucide-react";
+import { Eye, MessageCircle, CheckCircle2, Plus, X } from "lucide-react";
 import { toast } from "sonner";
-import { confirmOrder as apiConfirmOrder, listOrdersPaged, removeItemFromOrder, addItemToOrder, trackEvent } from "../../shared";
+import { confirmOrder as apiConfirmOrder, cancelOrder as apiCancelOrder, listOrdersPaged, removeItemFromOrder, addItemToOrder, trackEvent } from "../../shared";
 import { formatDateTime, waLink } from "../../shared";
+
+const STATUS = {
+  PENDING: 'pending',
+  CONFIRMED: 'confirmed',
+  ACTIVE_CART: 'ACTIVE_CART',
+  ABANDONED_CART: 'ABANDONED_CART',
+  CANCELLED: 'CANCELLED',
+};
+
+const STATUS_PRIORITY = {
+  [STATUS.ACTIVE_CART]: 0,
+  [STATUS.PENDING]: 1,
+  [STATUS.ABANDONED_CART]: 2,
+  [STATUS.CONFIRMED]: 3,
+  [STATUS.CANCELLED]: 4,
+};
+
+const STATUS_META = {
+  [STATUS.PENDING]: { label: 'Pending', className: 'text-amber-700 border-amber-200 bg-amber-50' },
+  [STATUS.ACTIVE_CART]: { label: 'Active Cart', className: 'text-blue-700 border-blue-200 bg-blue-50' },
+  [STATUS.ABANDONED_CART]: { label: 'Abandoned Cart', className: 'text-neutral-700 border-neutral-200 bg-neutral-50' },
+  [STATUS.CONFIRMED]: { label: 'Confirmed', className: 'text-green-700 border-green-200 bg-green-50' },
+  [STATUS.CANCELLED]: { label: 'Cancelled', className: 'text-red-700 border-red-200 bg-red-50' },
+};
 
 export default function OwnerShortlists({ products, orders, setOrders, setProducts }){
   const [q, setQ] = useState("");
@@ -48,12 +72,18 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
   }, [sentinel, nextOffset, orders]);
 
   const map = catalogMap;
+
   const merged = useMemo(()=>{
     return orders.map(o=>({
       ...o,
-      _status: o.status,
       _total: o.items.reduce((s,id)=> s + (map.get(id)?.price||0), 0),
-    })).sort((a,b)=> (a._status==='pending'? -1:1));
+      _updatedMs: Date.parse(o.updated_at || o.created_at || 0) || 0,
+    })).sort((a,b)=>{
+      const pa = STATUS_PRIORITY[a.status] ?? 99;
+      const pb = STATUS_PRIORITY[b.status] ?? 99;
+      if (pa !== pb) return pa - pb;
+      return (b._updatedMs || 0) - (a._updatedMs || 0);
+    });
   }, [orders, map]);
   const filtered = merged.filter(o=>{
     const text = `${o.customer_phone} ${o.items.join(' ')} ${o.id} ` + o.items.map(id=>map.get(id)?.title||'').join(' ');
@@ -61,12 +91,23 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
   });
 
   async function confirm(o){
+    if (!o?.id) return;
     try{
       const updated = await apiConfirmOrder(o.id);
-      setOrders(prev=> prev.map(x=> x.id===o.id ? { ...x, status: 'confirmed' } : x));
-      toast.success(`Order ${o.id} confirmed`);
+      setOrders(prev=> prev.map(x=> x.id===o.id ? updated : x));
+      toast.success('Order ' + o.id + ' confirmed');
     }catch(e){ console.error(e); toast.error("Failed to confirm order"); }
   }
+
+  async function cancel(o){
+    if (!o?.id) return;
+    try{
+      const updated = await apiCancelOrder(o.id);
+      setOrders(prev=> prev.map(x=> x.id===o.id ? updated : x));
+      toast.success('Order ' + o.id + ' cancelled');
+    }catch(e){ console.error(e); toast.error('Failed to cancel order'); }
+  }
+
 
   return (
     <div className="space-y-3">
@@ -87,18 +128,30 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
           ))}
         </div>
       )}
-      {filtered.map(o=> (
+      {filtered.map((o) => {
+        const statusMeta = STATUS_META[o.status] || { label: o.status || 'Unknown', className: 'text-neutral-700 border-neutral-200 bg-neutral-50' };
+        const createdText = formatDateTime(o.created_at) || '-';
+        const updatedText = formatDateTime(o.updated_at) || createdText;
+        const timelineText = (() => {
+          if (o.status === STATUS.CONFIRMED){
+            const confirmed = formatDateTime(o.confirmed_at) || updatedText;
+            return `Confirmed: ${confirmed}`;
+          }
+          if (o.status === STATUS.CANCELLED){
+            return `Cancelled: ${updatedText}`;
+          }
+          return `Updated: ${updatedText}`;
+        })();
+        const canConfirm = ![STATUS.CONFIRMED, STATUS.CANCELLED].includes(o.status);
+        const canCancel = ![STATUS.CANCELLED, STATUS.CONFIRMED].includes(o.status);
+        return (
         <Card key={o.id} className="p-3 space-y-2">
           <div className="flex items-center justify-between">
             <div className="font-medium">{o.id}</div>
-            {o._status==='pending' ? (
-              <Badge variant="outline" className="text-amber-700 border-amber-200 bg-amber-50">Pending</Badge>
-            ) : (
-              <Badge variant="outline" className="text-green-700 border-green-200 bg-green-50">Confirmed</Badge>
-            )}
+            <Badge variant="outline" className={statusMeta.className}>{statusMeta.label}</Badge>
           </div>
           <div className="text-sm text-neutral-600">Customer: {o.customer_phone}</div>
-          <div className="text-xs text-neutral-500">Created: {formatDateTime(o.created_at) || '-' } {o.confirmed_at ? `• Confirmed: ${formatDateTime(o.confirmed_at)}` : ''}</div>
+          <div className="text-xs text-neutral-500">Created: {createdText} • {timelineText}</div>
           <div className="grid grid-cols-3 gap-2">
             {o.items.map(id=>{
               const p = map.get(id);
@@ -108,7 +161,7 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
                   <img src={p.images?.[0]} alt={p.title} loading="lazy" decoding="async" className="h-24 w-full object-cover rounded-lg" onClick={()=>setPreview({ url:p.images?.[0], product:p, order:o })} />
                   <Button size="icon" variant="secondary" className="absolute top-1 right-1 h-7 w-7" onClick={()=>setPreview({ url:p.images?.[0], product:p, order:o })}><Eye className="h-4 w-4"/></Button>
                 </div>
-              )
+              );
             })}
           </div>
           {o.removed_items?.length>0 && (
@@ -123,7 +176,7 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
                       <Button size="icon" variant="secondary" className="absolute top-1 right-1 h-7 w-7" onClick={async()=>{
                         try{
                           const updated = await addItemToOrder(o.id, id);
-                          setOrders(orders.map(x=> x.id===updated.id ? updated : x));
+                          setOrders(prev=> prev.map(x=> x.id===updated.id ? updated : x));
                           toast.success('Added back');
                         }catch(e){ console.error(e); toast.error('Failed to add back'); }
                       }}>
@@ -140,18 +193,22 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
             <div className="font-semibold">₹{o._total.toLocaleString('en-IN')}</div>
           </div>
           <div className="flex gap-2">
-            <Button className="w-1/2 flex items-center justify-center gap-2" variant="outline" onClick={()=>{ window.open(waLink(o.customer_phone, `Hi about shortlist ${o.id}`), '_blank'); }}>
+            <Button className="flex-1 flex items-center justify-center gap-2" variant="outline" onClick={()=>{ window.open(waLink(o.customer_phone, 'Hi about shortlist ' + o.id), '_blank'); }}>
               <MessageCircle className="h-4 w-4"/>
               <span>Chat</span>
             </Button>
-            {o._status==='pending' ? (
-              <Button className="w-1/2 flex items-center justify-center gap-2" onClick={()=>confirm(o)}><CheckCircle2 className="h-4 w-4"/>Confirm Order</Button>
-            ) : (
-              <Button className="w-1/2 flex items-center justify-center gap-2" variant="secondary" disabled>Confirmed</Button>
-            )}
+            <Button className="flex-1 flex items-center justify-center gap-2" variant="destructive" disabled={!canCancel} onClick={()=> canCancel && cancel(o)}>
+              <X className="h-4 w-4"/>
+              <span>Cancel</span>
+            </Button>
+            <Button className="flex-1 flex items-center justify-center gap-2" variant={canConfirm ? 'default' : 'secondary'} disabled={!canConfirm} onClick={()=> canConfirm && confirm(o)}>
+              <CheckCircle2 className="h-4 w-4"/>
+              <span>Confirm</span>
+            </Button>
           </div>
         </Card>
-      ))}
+        );
+      })}
 
       <Dialog open={!!preview} onOpenChange={()=>setPreview(null)}>
         <DialogContent className="max-w-md p-0">
@@ -166,7 +223,7 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
                   <div className="text-neutral-500">ID: {p.id} • ₹{(p.price||0).toLocaleString('en-IN')}</div>
                   <div className="flex justify-end gap-2 mt-2">
                     <Button variant="outline" onClick={()=>setPreview(null)} className="flex items-center justify-center">Close</Button>
-                    <Button variant="destructive" onClick={async()=>{ try{ const updated = await removeItemFromOrder(preview.order.id, p.id); setOrders(orders.map(o=> o.id===updated.id? updated : o)); } finally { setPreview(null); } }} className="flex items-center justify-center">Remove from Shortlist</Button>
+                    <Button variant="destructive" onClick={async()=>{ try{ const updated = await removeItemFromOrder(preview.order.id, p.id); setOrders(prev=> prev.map(o=> o.id===updated.id ? updated : o)); } finally { setPreview(null); } }} className="flex items-center justify-center">Remove from Shortlist</Button>
                   </div>
                 </div>
               ) : null; })()}

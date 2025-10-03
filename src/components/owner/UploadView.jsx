@@ -1,14 +1,14 @@
 import { useRef, useState, useMemo, useEffect } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { Image as ImageIcon, Plus, Sparkles, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { SHOPIFY_CATEGORIES, makeProductId, b64FromFile, fetchAIMetadata, createProduct as apiCreateProduct, updateProduct as apiUpdateProduct, normalizeStyleTag } from "../../shared";
+import { SHOPIFY_CATEGORIES, JEWELLERY_STYLE_OPTIONS, makeProductId, b64FromFile, fetchAIMetadata, createProduct as apiCreateProduct, updateProduct as apiUpdateProduct, normalizeStyleTag } from "../../shared";
 
 export default function UploadView({ onAddProduct, editing, existing, onSaveEdit, onCancel }){
   const [images, setImages] = useState(existing?.images || []);
@@ -290,15 +290,26 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
               <div className="text-sm">AI is filling details…</div>
             </div>
           )}
-          {/* Category & Qty right below camera box */}
+          {/* Category & Style */}
           <div className={aiLoading ? 'opacity-60 pointer-events-none' : ''}>
-            <Label>Category & Qty</Label>
-            <div className="grid grid-cols-2 gap-2">
-              <Select value={category} onValueChange={(val)=>{ setCategory(val); setMetaTouched(true); }} disabled={aiLoading}>
-                <SelectTrigger><SelectValue placeholder="Category" /></SelectTrigger>
-                <SelectContent>{SHOPIFY_CATEGORIES.map((c)=> <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-              </Select>
-              <Input type="number" min={0} value={qty} onChange={(e)=>setQty(e.target.value)} placeholder="Qty" />
+            <div className="flex flex-nowrap gap-2">
+              <div className="w-[38%] min-w-[120px]">
+                <Label className="block text-xs text-neutral-600 mb-1">Category</Label>
+                <Select value={category} onValueChange={(val)=>{ setCategory(val); setMetaTouched(true); }} disabled={aiLoading}>
+                  <SelectTrigger><SelectValue placeholder="Category" /></SelectTrigger>
+                  <SelectContent>{SHOPIFY_CATEGORIES.map((c)=> <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+              <div className="w-[38%] min-w-[120px]">
+                <Label className="block text-xs text-neutral-600 mb-1">Style</Label>
+                <Select value={styleTag || 'Not specified'} onValueChange={(val)=>{ setStyleTag(val === 'Not specified' ? '' : val); setMetaTouched(true); }} disabled={aiLoading}>
+                  <SelectTrigger><SelectValue placeholder="Style" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Not specified">Not specified</SelectItem>
+                    {JEWELLERY_STYLE_OPTIONS.map(opt=> <SelectItem key={opt} value={opt}>{opt}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             {submitted && errors.category && (<div className="text-xs text-red-600 mt-1">{errors.category}</div>)}
           </div>
@@ -332,17 +343,21 @@ export default function UploadView({ onAddProduct, editing, existing, onSaveEdit
             )}
           </div>
 
-          {/* Price & Cost side-by-side with separate labels */}
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <Label>Price</Label>
+          {/* Price, Cost & Quantity */}
+          <div className="flex flex-nowrap gap-2">
+            <div className="w-[40%] min-w-[120px]">
+              <Label className="block text-xs text-neutral-600 mb-1">Price</Label>
               <Input type="number" min={1} value={price} onChange={(e)=>setPrice(e.target.value)} onFocus={()=>{ if(Number(price)===0) setPrice(""); }} placeholder="Price" className={submitted && errors.price ? "border-red-300" : ""} />
               {submitted && errors.price && (<div className="text-xs text-red-600 mt-1">{errors.price}</div>)}
             </div>
-            <div>
-              <Label>Cost <span className="text-neutral-400">(optional)</span></Label>
+            <div className="w-[40%] min-w-[120px]">
+              <Label className="block text-xs text-neutral-600 mb-1">Cost <span className="text-neutral-400">(optional)</span></Label>
               <Input type="number" min={0} value={cost} onChange={(e)=>setCost(e.target.value)} onFocus={()=>{ if(Number(cost)===0) setCost(""); }} placeholder="Cost" className={submitted && errors.cost ? "border-red-300" : ""} />
               {submitted && errors.cost && (<div className="text-xs text-red-600 mt-1">{errors.cost}</div>)}
+            </div>
+            <div className="w-[20%] min-w-[80px]">
+              <Label className="block text-xs text-neutral-600 mb-1">Quantity</Label>
+              <Input type="number" min={0} value={qty} onChange={(e)=>setQty(e.target.value)} placeholder="Qty" />
             </div>
           </div>
         </div>

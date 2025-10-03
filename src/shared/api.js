@@ -196,9 +196,28 @@ export async function createOrder(items, customerPhone, sessionId){
   return await r.json();
 }
 
+export async function notifyOwnerByEmail(payload){
+  try{
+    await fetch(`${API_BASE}/notify-owner`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  }catch(err){
+    // Don't surface to user; just log so the order flow isn't affected
+    console.warn('Owner email notification failed', err);
+  }
+}
+
 export async function confirmOrder(id){
   const r = await apiFetch(`${API_BASE}/orders/${encodeURIComponent(id)}/confirm`, { method: "PATCH" });
   if (!r.ok) throw new Error("confirm order failed");
+  return await r.json();
+}
+
+export async function cancelOrder(id){
+  const r = await apiFetch(`${API_BASE}/orders/${encodeURIComponent(id)}/cancel`, { method: 'PATCH' });
+  if (!r.ok) throw new Error('cancel order failed');
   return await r.json();
 }
 
@@ -213,12 +232,39 @@ export async function getOrdersBySession(sessionId, limit=1){
   return await r.json();
 }
 
+export async function getCart(sessionId, customerPhone){
+  const u = API_BASE
+    ? new URL(`${API_BASE}/cart`)
+    : new URL('/cart', window.location.origin);
+  if (sessionId) u.searchParams.set('session_id', sessionId);
+  if (customerPhone) u.searchParams.set('customer_phone', customerPhone);
+  const r = await apiFetch(u.toString().replace(window.location.origin, ''));
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error('load cart failed');
+  return await r.json();
+}
+
+export async function syncCart(items, sessionId, customerPhone){
+  const payload = { items: Array.isArray(items) ? items : [] };
+  if (sessionId) payload.session_id = sessionId;
+  if (customerPhone) payload.customer_phone = customerPhone;
+  const r = await apiFetch(`${API_BASE}/cart/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error('sync cart failed');
+  return await r.json();
+}
+
 // ---- Analytics ----
 export async function trackEvent(kind, payload = {}){
   // Attach session id if available
   let session_id = null;
+  let customer_phone = null;
   try { session_id = localStorage.getItem('ac_session_id') || null; } catch {}
-  const body = { kind, payload, session_id };
+  try { customer_phone = localStorage.getItem('ac_phone') || null; } catch {}
+  const body = { kind, payload, session_id, customer_phone };
   // Build URL and include token as query param for visibility (some proxies strip headers)
   const r = await apiFetch(`${API_BASE}/events`, {
     method: 'POST',
