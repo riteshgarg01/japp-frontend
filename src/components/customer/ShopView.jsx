@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Slider } from "@/components/ui/slider";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { ShoppingCart, Filter, Phone, Image as ImageIcon, X, Loader2 } from "lucide-react";
+import { ShoppingCart, Filter, Image as ImageIcon, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
 import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, notifyOwnerByEmail, listProductsPaged, getProductImages, getOrdersBySession, getCart, syncCart, trackEvent, normalizeStyleTag, JEWELLERY_STYLE_OPTIONS } from "../../shared";
@@ -92,6 +92,7 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const [phone, setPhone] = useState(()=> localStorage.getItem('ac_phone') || "");
   const [phoneModal, setPhoneModal] = useState(false);
   const [orderBanner, setOrderBanner] = useState(null); // { id, when }
+  const [orderModal, setOrderModal] = useState(null); // { id, items, total, phone }
   const [pendingAddId, setPendingAddId] = useState(null);
   const [orderSending, setOrderSending] = useState(false);
 
@@ -99,6 +100,7 @@ useEffect(()=>localStorage.setItem("ac_shortlist", JSON.stringify(shortlist)), [
 useEffect(()=>{ localStorage.setItem('ac_session_id', sessionId); }, [sessionId]);
 useEffect(()=>{ if (phone) localStorage.setItem('ac_phone', phone); }, [phone]);
 
+  // Persist shortlist changes to the backend so the owner view stays in sync.
   const syncCartToServer = useCallback(async (items, fallbackList = null, overrides = {}) => {
     const effectivePhone = overrides.phone ?? phone;
     const effectiveSession = overrides.sessionId ?? sessionId;
@@ -296,6 +298,7 @@ useEffect(()=>{
     fetchPage(10, 0).catch(()=>{});
   }, [cat, priceRange[0], priceRange[1], q, hideUnavailable, styleFilter]);
 
+  // Toggle shortlist locally first (for snappy UI) then sync with backend.
   function toggleShortlist(id){
     const trimmedPhone = (phone || '').trim();
     if (!trimmedPhone){
@@ -307,7 +310,8 @@ useEffect(()=>{
     const nextList = has ? shortlist.filter(x => x !== id) : [...shortlist, id];
     if (has && nextList.length === shortlist.length) return;
     setShortlist(nextList);
-    syncCartToServer(nextList, shortlist);
+    const fallback = has ? shortlist : nextList; // prevent empty rollback if sync fails on first add
+    syncCartToServer(nextList, fallback);
     try {
       trackEvent(has ? 'remove_from_cart' : 'add_to_cart', { product_id: id });
     } catch {}
@@ -431,13 +435,7 @@ useEffect(()=>{
     }
     if (orderSending) return;
     setOrderSending(true);
-    const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
-    const isMobile = /Mobi|Android|iPhone|iPad/i.test(ua);
-    let popup = null;
     try{
-      if (!isMobile){
-        popup = window.open('', '_blank');
-      }
       const created = await apiCreateOrder(shortlist, phoneVal, sessionId);
 
       // 🔔 Send owner an email (non-blocking)
@@ -446,22 +444,18 @@ useEffect(()=>{
         items: created.items || [],
         customerPhone: phoneVal
       });  
-      
+
+      const snapshot = shortlist
+        .map(id => catalog.find(p => p.id === id))
+        .filter(Boolean);
+      const totalAmount = snapshot.reduce((sum, p) => sum + (p?.price || 0), 0);
+
       onOrderCreate(created);
       setShortlist([]);
       initialShortlistRef.current = [];
-      toast.success("Order request sent");
-      try{ trackEvent('send_order', { order_id: created.id, items: created.items?.length||0 }); }catch{}
-      const msg = `New order request ${created.id}\nItems: ${created.items.join(", ")}\nCustomer: ${phoneVal}`;
-      const url = waLink(ownerPhone, msg);
-      if (isMobile) {
-        window.location.href = url;
-      } else if (popup && !popup.closed) {
-        popup.location = url;
-      } else {
-        window.open(url, '_blank');
-      }
       setShortlistOpen(false);
+      setOrderModal({ id: created.id, items: snapshot, total: totalAmount, phone: phoneVal });
+      try{ trackEvent('send_order', { order_id: created.id, items: created.items?.length||0 }); }catch{}
       localStorage.setItem('ac_last_order_id', created.id);
       try{
         localStorage.removeItem(ORDER_BANNER_DISMISS_KEY);
@@ -469,7 +463,6 @@ useEffect(()=>{
       }catch{}
     }catch(e){
       console.error(e);
-      if (popup && !popup.closed) { try{ popup.close(); }catch{} }
       toast.error("Failed to send order");
     }finally{
       setTimeout(()=> setOrderSending(false), 500);
@@ -526,6 +519,44 @@ useEffect(()=>{
           We received your order {orderBanner.id}. We will get in touch shortly.
           <button className="float-right text-green-700" onClick={dismissOrderBanner}>×</button>
         </div>
+      )}
+      {orderModal && (
+        <Dialog open onOpenChange={(open)=>{ if(!open) setOrderModal(null); }}>
+          <DialogContent className="max-w-sm">
+            <div className="space-y-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-green-700">We received your order</div>
+                  <div className="text-lg font-bold mt-1">{orderModal.id}</div>
+                </div>
+                <Button variant="ghost" size="icon" onClick={()=>setOrderModal(null)}>
+                  <X className="h-5 w-5" />
+                </Button>
+              </div>
+              <div className="text-sm text-neutral-600 space-y-1">
+                <div><span className="font-medium">Items:</span> {orderModal.items.length}</div>
+                <div><span className="font-medium">Total:</span> {fmt(orderModal.total)}</div>
+                <div><span className="font-medium">Phone:</span> {orderModal.phone}</div>
+                <div><span className="font-medium">Products:</span></div>
+                <ul className="list-disc list-inside text-xs text-neutral-500 space-y-1 max-h-40 overflow-auto">
+                  {orderModal.items.map(p => (
+                    <li key={p.id}>{p.id} — {p.title}</li>
+                  ))}
+                </ul>
+              </div>
+              <Button
+                className="w-full"
+                onClick={()=>{
+                  const body = `I have placed a new order request.\nOrder: ${orderModal.id}\nItems (${orderModal.items.length}): ${orderModal.items.map(p=>p.id).join(', ')}\nTotal: ${fmt(orderModal.total)}\nPhone: ${orderModal.phone}`;
+                  window.open(waLink(ownerPhone, body), '_blank');
+                  setOrderModal(null);
+                }}
+              >
+                Notify us on WhatsApp
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {loading && catalog.length===0 && (
@@ -655,6 +686,11 @@ useEffect(()=>{
           );
         })}
       </div>
+      {loadingMore && (
+        <div className="py-4 flex items-center justify-center text-xs text-neutral-500">
+          <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading more products…
+        </div>
+      )}
 
       {/* Filter dialog */}
       <Dialog open={filterOpen} onOpenChange={setFilterOpen}>
@@ -746,41 +782,8 @@ useEffect(()=>{
                 <X className="h-5 w-5" />
               </Button>
             </div>
-            {/* Sticky top controls to avoid bottom address bar issues */}
-            <div className="px-4 py-3 border-b bg-white sticky top-0 z-10">
-              {phone ? (
-                <div className="flex gap-2">
-                  <Button
-                    className="shrink-0 flex items-center justify-center gap-2 w-full"
-                    onClick={()=>sendOrder(phone)}
-                    disabled={orderSending}
-                  >
-                    {orderSending ? <Loader2 className="h-4 w-4 animate-spin"/> : <Phone className="h-4 w-4"/>}
-                    {orderSending ? 'Sending...' : 'Send Order'}
-                  </Button>
-                </div>
-              ) : (
-                <div className="flex gap-2">
-                  <Input
-                    type="tel"
-                    inputMode="tel"
-                    value={custPhoneMobile}
-                    onChange={(e)=>setCustPhoneMobile(e.target.value)}
-                    onFocus={(e)=>{ e.currentTarget.select(); e.currentTarget.scrollIntoView({ block: 'center' }); }}
-                    placeholder="Your WhatsApp (+91...)"
-                    className="text-base"
-                    disabled={orderSending}
-                  />
-                  <Button
-                    className="shrink-0 flex items-center justify-center gap-2"
-                    onClick={()=>{ const v=(custPhoneMobile||"").trim(); if(!v) return toast.error("Enter WhatsApp number"); setPhone(v); localStorage.setItem('ac_phone', v); sendOrder(v); }}
-                    disabled={orderSending}
-                  >
-                    {orderSending ? <Loader2 className="h-4 w-4 animate-spin"/> : <Phone className="h-4 w-4"/>}
-                    {orderSending ? 'Sending...' : 'Send Order'}
-                  </Button>
-                </div>
-              )}
+            <div className="px-4 py-3 border-b bg-white sticky top-0 z-10 text-xs text-neutral-600">
+              Review items below and confirm the order when ready.
             </div>
             <div className="flex-1 overflow-auto p-4">
               {/* Bigger product entries for recall */}
@@ -804,11 +807,34 @@ useEffect(()=>{
                 })}
               </div>
             </div>
-            <div className="p-4 border-t bg-white">
+            <div className="p-4 border-t bg-white space-y-3">
               <div className="flex items-center justify-between text-sm">
                 <div className="text-neutral-500">Total</div>
                 <div className="font-semibold">{fmt(shortlist.reduce((sum,id)=>{ const p = catalog.find(pp=>pp.id===id); return sum + (p?.price||0); },0))}</div>
               </div>
+              {phone ? (
+                <Button className="w-full flex items-center justify-center gap-2" onClick={()=>sendOrder(phone)} disabled={orderSending}>
+                  {orderSending && <Loader2 className="h-4 w-4 animate-spin"/>}
+                  {orderSending ? 'Confirming...' : 'Confirm Order'}
+                </Button>
+              ) : (
+                <div className="flex gap-2">
+                  <Input
+                    type="tel"
+                    inputMode="tel"
+                    value={custPhoneMobile}
+                    onChange={(e)=>setCustPhoneMobile(e.target.value)}
+                    onFocus={(e)=>{ e.currentTarget.select(); e.currentTarget.scrollIntoView({ block: 'center' }); }}
+                    placeholder="Your WhatsApp (+91...)"
+                    className="text-base"
+                    disabled={orderSending}
+                  />
+                  <Button className="shrink-0 flex items-center justify-center gap-2" onClick={()=>{ const v=(custPhoneMobile||"").trim(); if(!v) return toast.error("Enter WhatsApp number"); setPhone(v); localStorage.setItem('ac_phone', v); sendOrder(v); }} disabled={orderSending}>
+                    {orderSending && <Loader2 className="h-4 w-4 animate-spin"/>}
+                    {orderSending ? 'Confirming...' : 'Confirm Order'}
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         </DialogContent>

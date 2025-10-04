@@ -51,6 +51,9 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
   const [initialLoading, setInitialLoading] = useState(false);
   const missingFetchRef = useRef(new Set());
   const [confirmingId, setConfirmingId] = useState(null);
+  const [cancelingId, setCancelingId] = useState(null);
+  const [removingKey, setRemovingKey] = useState(null);
+  const [restoringKey, setRestoringKey] = useState(null);
 
   // Keep a fast lookup map so renders are O(1) when referencing product metadata.
   useEffect(()=>{ setCatalogMap(new Map(products.map(p=>[p.id,p]))); }, [products]);
@@ -160,10 +163,14 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
   async function cancel(o){
     if (!o?.id) return;
     try{
+      setCancelingId(o.id);
       const updated = await apiCancelOrder(o.id);
       setOrders(prev=> prev.map(x=> x.id===o.id ? updated : x));
       toast.success('Order ' + o.id + ' cancelled');
     }catch(e){ console.error(e); toast.error('Failed to cancel order'); }
+    finally{
+      setCancelingId(null);
+    }
   }
 
 
@@ -202,7 +209,7 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
         })();
         const isCart = o.status === STATUS.ACTIVE_CART || o.status === STATUS.ABANDONED_CART;
         const canConfirm = ![STATUS.CONFIRMED, STATUS.CANCELLED].includes(o.status);
-        const canCancel = ![STATUS.CANCELLED, STATUS.CONFIRMED].includes(o.status);
+        const canCancel = ![STATUS.CONFIRMED, STATUS.CANCELLED].includes(o.status);
         return (
         <Card
           key={o.id}
@@ -251,17 +258,23 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
                       </div>
                     );
                   }
+                  const key = `${o.id}|${id}`;
                   return (
                     <div key={id} className="relative">
                       <img src={p.images?.[0]} alt={p.title} loading="lazy" decoding="async" className="h-16 w-full object-cover rounded"/>
                       <Button size="icon" variant="secondary" className="absolute top-1 right-1 h-7 w-7" onClick={async()=>{
+                        if (restoringKey) return;
+                        setRestoringKey(key);
                         try{
                           const updated = await addItemToOrder(o.id, id);
                           setOrders(prev=> prev.map(x=> x.id===updated.id ? updated : x));
                           toast.success('Added back');
                         }catch(e){ console.error(e); toast.error('Failed to add back'); }
+                        finally {
+                          setRestoringKey(null);
+                        }
                       }}>
-                        <Plus className="h-4 w-4"/>
+                        {restoringKey===key ? <Loader2 className="h-4 w-4 animate-spin"/> : <Plus className="h-4 w-4"/>}
                       </Button>
                     </div>
                   );
@@ -278,14 +291,18 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
               <MessageCircle className="h-4 w-4"/>
               <span>Chat</span>
             </Button>
-            <Button className="flex-1 flex items-center justify-center gap-2" variant="destructive" disabled={!canCancel} onClick={()=> canCancel && cancel(o)}>
-              <X className="h-4 w-4"/>
-              <span>Cancel</span>
-            </Button>
-            <Button className="flex-1 flex items-center justify-center gap-2" variant={canConfirm ? 'default' : 'secondary'} disabled={!canConfirm || confirmingId===o.id} onClick={()=> canConfirm && confirm(o)}>
-              {confirmingId===o.id ? <Loader2 className="h-4 w-4 animate-spin"/> : <CheckCircle2 className="h-4 w-4"/>}
-              <span>{confirmingId===o.id ? 'Confirming...' : 'Confirm'}</span>
-            </Button>
+            {canCancel && (
+              <Button className="flex-1 flex items-center justify-center gap-2" variant="destructive" disabled={cancelingId===o.id} onClick={()=> cancel(o)}>
+                {cancelingId===o.id ? <Loader2 className="h-4 w-4 animate-spin"/> : <X className="h-4 w-4"/>}
+                <span>{cancelingId===o.id ? 'Cancelling...' : 'Cancel'}</span>
+              </Button>
+            )}
+            {canConfirm && (
+              <Button className="flex-1 flex items-center justify-center gap-2" variant="default" disabled={confirmingId===o.id} onClick={()=> confirm(o)}>
+                {confirmingId===o.id ? <Loader2 className="h-4 w-4 animate-spin"/> : <CheckCircle2 className="h-4 w-4"/>}
+                <span>{confirmingId===o.id ? 'Confirming...' : 'Confirm'}</span>
+              </Button>
+            )}
           </div>
         </Card>
         );
@@ -304,7 +321,21 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
                   <div className="text-neutral-500">ID: {p.id} • ₹{(p.price||0).toLocaleString('en-IN')}</div>
                   <div className="flex justify-end gap-2 mt-2">
                     <Button variant="outline" onClick={()=>setPreview(null)} className="flex items-center justify-center">Close</Button>
-                    <Button variant="destructive" onClick={async()=>{ try{ const updated = await removeItemFromOrder(preview.order.id, p.id); setOrders(prev=> prev.map(o=> o.id===updated.id ? updated : o)); } finally { setPreview(null); } }} className="flex items-center justify-center">Remove from Shortlist</Button>
+                    <Button variant="destructive" onClick={async()=>{
+                      if (removingKey) return;
+                      setRemovingKey(`${preview.order.id}|${p.id}`);
+                      try{
+                        const updated = await removeItemFromOrder(preview.order.id, p.id);
+                        setOrders(prev=> prev.map(o=> o.id===updated.id ? updated : o));
+                        toast.success('Removed from shortlist');
+                      }catch(e){ console.error(e); toast.error('Failed to remove'); }
+                      finally {
+                        setRemovingKey(null);
+                        setPreview(null);
+                      }
+                    }} className="flex items-center justify-center">
+                      {removingKey===`${preview.order.id}|${p.id}` ? <Loader2 className="h-4 w-4 animate-spin"/> : 'Remove from Shortlist'}
+                    </Button>
                   </div>
                 </div>
               ) : null; })()}

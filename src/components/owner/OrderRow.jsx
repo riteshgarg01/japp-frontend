@@ -13,6 +13,7 @@ import { waLink, getOwnerProduct } from "../../shared";
 export default function OrderRow({ order, products, ownerPhone, onRemove, onConfirm }){
   const [localProducts, setLocalProducts] = useState(()=> new Map(products.map(p=>[p.id,p])));
   const missingRef = useRef(new Set());
+  const [removingId, setRemovingId] = useState(null);
   useEffect(()=>{ setLocalProducts(new Map(products.map(p=>[p.id,p]))); }, [products]);
   // Missing products are fetched on demand so we never render empty slots.
   useEffect(()=>{
@@ -89,14 +90,23 @@ export default function OrderRow({ order, products, ownerPhone, onRemove, onConf
       </div>
       <div className="text-sm text-neutral-500">Customer: {order.customer_phone}</div>
       <div className="mt-3 grid grid-cols-3 gap-2">
-        {items.map(p => (
-          <div key={p.id} className="relative">
-            <img src={p.images?.[0]} alt={p.title} loading="lazy" className="h-20 w-full object-cover rounded-lg"/>
-            <Button size="icon" variant="secondary" className="absolute top-1 right-1 h-7 w-7" onClick={()=>onRemove(p.id)}>
-              <Trash2 className="h-4 w-4"/>
-            </Button>
-          </div>
-        ))}
+        {items.map(p => {
+          if (!p) return null;
+          const busy = removingId === p.id;
+          return (
+            <div key={p.id} className="relative">
+              <img src={p.images?.[0]} alt={p.title} loading="lazy" className="h-20 w-full object-cover rounded-lg"/>
+              <Button size="icon" variant="secondary" className="absolute top-1 right-1 h-7 w-7" disabled={busy} onClick={async()=>{
+                if (busy) return;
+                setRemovingId(p.id);
+                try { await onRemove(p.id); }
+                finally { setRemovingId(null); }
+              }}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin"/> : <Trash2 className="h-4 w-4"/>}
+              </Button>
+            </div>
+          );
+        })}
       </div>
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 mt-3">
         <Button
