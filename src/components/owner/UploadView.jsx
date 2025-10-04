@@ -1,3 +1,7 @@
+/*
+  UploadView manages both create + edit flows for catalog items: it persists drafts, triggers AI
+  metadata, exposes manual overrides (category/style/price/qty), and reports updates back upstream.
+*/
 import { useRef, useState, useMemo, useEffect } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";

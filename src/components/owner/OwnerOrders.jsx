@@ -1,10 +1,61 @@
+/*
+  OwnerOrders powers the split view of pending vs confirmed shortlists. It reuses the global
+  product cache, re-fetches any missing catalog entries, and funnels confirm actions back into
+  inventory updates so products stay in sync across owner tools.
+*/
+import { useEffect, useRef, useState } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { confirmOrder as apiConfirmOrder } from "../../shared";
+import { confirmOrder as apiConfirmOrder, getOwnerProduct } from "../../shared";
 import OrderRow from "./OrderRow.jsx";
 
+// OwnerOrders mirrors the pending/confirmed dashboards. We keep a local catalog cache so
+// orders referencing unseen products still render thumbnails.
 export default function OwnerOrders({ products, setProducts, orders, setOrders, ownerPhone }){
+  const [catalogMap, setCatalogMap] = useState(()=> new Map(products.map(p=>[p.id,p])));
+  const missingRef = useRef(new Set());
+  useEffect(()=>{ setCatalogMap(new Map(products.map(p=>[p.id,p]))); }, [products]);
+  // Fetch any products referenced by orders that are missing from the local catalog.
+  useEffect(()=>{
+    const map = catalogMap;
+    const toFetch = [];
+    orders.forEach(order => {
+      if (!order) return;
+      (order.items || []).forEach(id => {
+        if (!id) return;
+        if (map.has(id)) return;
+        if (missingRef.current.has(id)) return;
+        missingRef.current.add(id);
+        toFetch.push(id);
+      });
+    });
+    if (!toFetch.length) return;
+    let cancelled = false;
+    (async ()=>{
+      try{
+        const results = await Promise.all(toFetch.map(id=> getOwnerProduct(id).catch(()=>null)));
+        if (cancelled) return;
+        const valid = results.filter(Boolean);
+        if (valid.length){
+          setCatalogMap(prev => {
+            const next = new Map(prev);
+            valid.forEach(prod => { if (prod?.id) next.set(prod.id, prod); });
+            return next;
+          });
+          setProducts(prev => {
+            const mapProd = new Map(prev.map(p=>[p.id,p]));
+            valid.forEach(prod => { if (prod?.id && !mapProd.has(prod.id)) mapProd.set(prod.id, prod); });
+            return Array.from(mapProd.values());
+          });
+        }
+      }finally{
+        toFetch.forEach(id=> missingRef.current.delete(id));
+      }
+    })();
+    return ()=>{ cancelled = true; };
+  }, [orders, catalogMap, setProducts]);
+
   const pending = orders.filter(o=>o.status==='pending');
   const confirmed = orders.filter(o=>o.status==='confirmed');
 
@@ -61,8 +112,15 @@ export default function OwnerOrders({ products, setProducts, orders, setOrders, 
               <div className="text-sm text-neutral-500">Customer: {o.customer_phone}</div>
               <div className="mt-2 grid grid-cols-3 gap-2">
                 {o.items.map(id=>{
-                  const p = products.find(pp=>pp.id===id);
-                  return p ? <img key={id} src={p.images?.[0]} alt={p.title} className="h-16 w-full object-cover rounded-lg"/> : null;
+                  const p = catalogMap.get(id);
+                  if (!p){
+                    return (
+                      <div key={id} className="h-16 w-full border border-dashed border-neutral-300 rounded grid place-items-center text-[10px] text-neutral-500 bg-neutral-50">
+                        Loading {id}
+                      </div>
+                    );
+                  }
+                  return <img key={id} src={p.images?.[0]} alt={p.title} className="h-16 w-full object-cover rounded-lg"/>;
                 })}
               </div>
             </div>

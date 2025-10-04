@@ -1,11 +1,52 @@
-import { useState } from "react";
+/*
+  OrderRow renders a single pending shortlist card. It hydrates its own product cache so that
+  remove/confirm actions always display thumbnails, even if the parent product list is stale.
+*/
+import { useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MessageCircle, Trash2, CheckCircle2, Loader2 } from "lucide-react";
-import { waLink } from "../../shared";
+import { waLink, getOwnerProduct } from "../../shared";
 
+// Each pending shortlist row hydrates its own product cache so actions (remove/confirm) always show
+// accurate thumbnails even when the parent products array is stale.
 export default function OrderRow({ order, products, ownerPhone, onRemove, onConfirm }){
-  const items = order.items.map(id=>products.find(p=>p.id===id)).filter(Boolean);
+  const [localProducts, setLocalProducts] = useState(()=> new Map(products.map(p=>[p.id,p])));
+  const missingRef = useRef(new Set());
+  useEffect(()=>{ setLocalProducts(new Map(products.map(p=>[p.id,p]))); }, [products]);
+  // Missing products are fetched on demand so we never render empty slots.
+  useEffect(()=>{
+    const map = localProducts;
+    const toFetch = [];
+    (order.items || []).forEach(id => {
+      if (!id) return;
+      if (map.has(id)) return;
+      if (missingRef.current.has(id)) return;
+      missingRef.current.add(id);
+      toFetch.push(id);
+    });
+    if (!toFetch.length) return;
+    let cancelled = false;
+    (async ()=>{
+      try{
+        const results = await Promise.all(toFetch.map(id=> getOwnerProduct(id).catch(()=>null)));
+        if (cancelled) return;
+        const valid = results.filter(Boolean);
+        if (valid.length){
+          setLocalProducts(prev => {
+            const next = new Map(prev);
+            valid.forEach(prod => { if (prod?.id) next.set(prod.id, prod); });
+            return next;
+          });
+        }
+      }finally{
+        toFetch.forEach(id=> missingRef.current.delete(id));
+      }
+    })();
+    return ()=>{ cancelled = true; };
+  }, [order.items, localProducts]);
+
+  const items = order.items.map(id=> localProducts.get(id)).filter(Boolean);
   const message = `Hello, I am following up on shortlist ${order.id}. Could we confirm availability and pricing?`;
   const chatUrl = waLink(order.customer_phone, message);
   const [chatBusy, setChatBusy] = useState(false);

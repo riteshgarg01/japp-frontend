@@ -1,3 +1,9 @@
+/*
+  ShopView drives the entire customer shopping surface:
+  - manages local shortlist state, cart sync with the backend, and phone/session persistence
+  - hydrates gallery images (with aggressive prefetch + caching) so carousels stay responsive
+  - owns filter/query UI and product pagination, passing the curated shortlist back upstream
+*/
 import React, { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,6 +21,11 @@ import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, notifyOwnerByEm
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 const ORDER_BANNER_DISMISS_KEY = "ac_order_banner_dismissed";
 const CONFIRMED_BANNER_SEEN_KEY = "ac_confirmed_banner_seen";
+const IMAGE_CACHE_KEY = "ac_image_cache_v1";
+const IMAGE_CACHE_LIMIT = 60;
+
+// ShopView owns customer-facing state (filters, shortlist, gallery cache). Any cart sync or
+// image fetch should flow through here so other components can treat the server as source of truth.
 export default function ShopView({ products, onOrderCreate, ownerPhone, isLoading }){
   const [cat, setCat] = useState("All");
   const [styleFilter, setStyleFilter] = useState("All");
@@ -31,15 +42,50 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const loadStep = 20;
   const [preview, setPreview] = useState(null); // { product, index }
   const [imgIndexById, setImgIndexById] = useState({});
-  const [imagesById, setImagesById] = useState({});
+  const [galleryLoading, setGalleryLoading] = useState({});
+  // Gallery cache survives navigation so we can show secondary images immediately when a user returns.
+  const [imagesById, setImagesById] = useState(()=>{
+    if (typeof window === 'undefined') return {};
+    try{
+      const raw = localStorage.getItem(IMAGE_CACHE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }catch{}
+    return {};
+  });
   // Deduplicate in-flight image fetches per product to avoid repeated GETs
   const inflightImgsRef = useRef({});
   // Remember products we already attempted to fetch (even if they only have 1 image)
   const fetchedIdsRef = useRef(new Set());
+  const cacheHydratedRef = useRef(false);
   const [descExpanded, setDescExpanded] = useState(new Set());
   const touchRef = useRef({ startX: 0, startY: 0, t: 0 });
   const initialShortlistRef = useRef(shortlist);
   const cartBootstrappedRef = useRef(false);
+  // Whenever we mutate the gallery cache, persist it so future visits render instantly.
+  const persistImageCache = useCallback((cache)=>{
+    if (typeof window === 'undefined') return;
+    try{ localStorage.setItem(IMAGE_CACHE_KEY, JSON.stringify(cache)); }catch{}
+  }, []);
+
+  const setGalleryLoadingFlag = useCallback((pid, value) => {
+    setGalleryLoading(prev => {
+      if (prev[pid] === value) return prev;
+      const next = { ...prev };
+      if (value) next[pid] = true; else delete next[pid];
+      return next;
+    });
+  }, []);
+
+  // On first mount push cached gallery ids into fetchedIds so we do not refetch immediately.
+  useEffect(()=>{
+    if (cacheHydratedRef.current) return;
+    cacheHydratedRef.current = true;
+    Object.keys(imagesById || {}).forEach(id => {
+      if (id) fetchedIdsRef.current.add(id);
+    });
+  }, [imagesById]);
 
   // lightweight session + phone persistence
   const [sessionId, setSessionId] = useState(()=> localStorage.getItem('ac_session_id') || `sess-${Math.random().toString(36).slice(2,8)}-${Date.now().toString(36)}`);
@@ -203,13 +249,25 @@ useEffect(()=>{
       style_tag: styleFilter === 'All' ? undefined : styleFilter,
     };
     const data = await listProductsPaged(params);
+    const incoming = data.items || [];
     setCatalog(prev=>{
       const map = new Map(prev.map(p=>[p.id,p]));
-      for (const it of (data.items||[])) map.set(it.id, it);
+      for (const it of incoming) map.set(it.id, it);
       return Array.from(map.values());
     });
     setTotal(data.total || 0);
     setNextOffset(data.next_offset ?? null);
+    // Kick off gallery fetches for any new products so carousel feels instant.
+    incoming.forEach(item => {
+      if (!item?.id) return;
+      const cached = imagesById[item.id];
+      if ((cached?.length || 0) > 1) {
+        fetchedIdsRef.current.add(item.id);
+        return;
+      }
+      if (inflightImgsRef.current[item.id]) return;
+      ensureImages(item);
+    });
     setLoading(false);
     setLoadingMore(false);
   }
@@ -258,28 +316,49 @@ useEffect(()=>{
 
   async function ensureImages(p){
     const pid = p.id;
-    // If we've already attempted for this product, don't re-fetch
-    if (fetchedIdsRef.current.has(pid)) {
-      return imagesById[pid] || p.images || [];
-    }
-    fetchedIdsRef.current.add(pid);
+    if (!pid) return [];
     const cached = imagesById[pid];
-    if ((cached?.length || 0) > 1) return cached;
-    // If a fetch is already in-flight for this product, reuse it
-    if (inflightImgsRef.current[pid]) return inflightImgsRef.current[pid];
-    inflightImgsRef.current[pid] = (async () => {
+    if ((cached?.length || 0) > 1){
+      fetchedIdsRef.current.add(pid);
+      return cached;
+    }
+    if (inflightImgsRef.current[pid]){
+      return inflightImgsRef.current[pid];
+    }
+    setGalleryLoadingFlag(pid, true);
+    // Fetch the full gallery once and store it so future navigations are instant.
+    const fetchPromise = (async () => {
       try{
         const { images } = await getProductImages(pid);
-        setImagesById(prev=>({ ...prev, [pid]: images }));
+        if (!Array.isArray(images) || images.length === 0){
+          return imagesById[pid] || p.images || [];
+        }
+        setImagesById(prev => {
+          const merged = { ...prev, [pid]: images };
+          const keys = Object.keys(merged);
+          let nextCache = merged;
+          if (keys.length > IMAGE_CACHE_LIMIT){
+            nextCache = keys.slice(-IMAGE_CACHE_LIMIT).reduce((acc, key)=>{
+              acc[key] = merged[key];
+              return acc;
+            }, {});
+          }
+          persistImageCache(nextCache);
+          fetchedIdsRef.current = new Set(Object.keys(nextCache));
+          return nextCache;
+        });
+        fetchedIdsRef.current.add(pid);
         return images;
-      }catch{
+      }catch(err){
+        console.warn('Failed to load gallery images', err);
         return imagesById[pid] || p.images || [];
       }finally{
-        // Release the in-flight marker on next tick
         setTimeout(()=>{ delete inflightImgsRef.current[pid]; }, 0);
+        setGalleryLoadingFlag(pid, false);
       }
     })();
-    return inflightImgsRef.current[pid];
+    inflightImgsRef.current[pid] = fetchPromise;
+    return fetchPromise;
   }
 
   const dismissOrderBanner = () => {
@@ -471,6 +550,12 @@ useEffect(()=>{
         {!loading && filtered.slice(0, displayCount).map((p) => {
           const isAvailable = (p.available && (p.qty||0) > 0);
           const styleLabel = normalizeStyleTag(p.style_tag);
+          const cachedGallery = imagesById[p.id];
+          const baseGallery = p.images || [];
+          const gallery = (cachedGallery && cachedGallery.length ? cachedGallery : baseGallery);
+          const isFetchingGallery = Boolean(galleryLoading[p.id] || inflightImgsRef.current[p.id]);
+          const canNavigateGallery = (gallery?.length || 0) > 1;
+          const showGalleryControls = canNavigateGallery || isFetchingGallery;
           return (
             <motion.div key={p.id} initial={{opacity:0, y:8}} animate={{opacity:1, y:0}}>
               <Card className="shadow-sm overflow-hidden">
@@ -483,33 +568,43 @@ useEffect(()=>{
                         // Kick off background fetch for full images (do not block UI)
                         if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p); }
                       }} />
-                      {((imagesById[p.id] || p.images)?.length>1) && (
+                      {showGalleryControls && (
                         <>
                           <button
-                            className="absolute left-2 top-1/2 -translate-y-1/2 bg-white/70 hover:bg-white/90 rounded-full w-8 h-8 grid place-items-center"
+                            className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full w-8 h-8 grid place-items-center ${canNavigateGallery ? 'bg-white/70 hover:bg-white/90' : 'bg-white/50 text-neutral-400 cursor-default'}`}
+                            disabled={!canNavigateGallery}
                             onClick={(e)=>{
                               e.stopPropagation();
+                              if (!canNavigateGallery){ ensureImages(p); return; }
                               const imgs = (imagesById[p.id] || p.images || []);
                               const len = Math.max(1, imgs.length);
                               setImgIndexById(s=>({ ...s, [p.id]: ((s[p.id]||0) - 1 + len) % len }));
                               if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p); }
                             }}
                           >
-                            ‹
+                            {(!canNavigateGallery && isFetchingGallery) ? <Loader2 className="h-4 w-4 animate-spin"/> : '‹'}
                           </button>
                           <button
-                            className="absolute right-2 top-1/2 -translate-y-1/2 bg-white/70 hover:bg-white/90 rounded-full w-8 h-8 grid place-items-center"
+                            className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full w-8 h-8 grid place-items-center ${canNavigateGallery ? 'bg-white/70 hover:bg-white/90' : 'bg-white/50 text-neutral-400 cursor-default'}`}
+                            disabled={!canNavigateGallery}
                             onClick={(e)=>{
                               e.stopPropagation();
+                              if (!canNavigateGallery){ ensureImages(p); return; }
                               const imgs = (imagesById[p.id] || p.images || []);
                               const len = Math.max(1, imgs.length);
                               setImgIndexById(s=>({ ...s, [p.id]: ((s[p.id]||0) + 1) % len }));
                               if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p); }
                             }}
                           >
-                            ›
+                            {(!canNavigateGallery && isFetchingGallery) ? <Loader2 className="h-4 w-4 animate-spin"/> : '›'}
                           </button>
                         </>
+                      )}
+                      {isFetchingGallery && canNavigateGallery && (
+                        // Overlay spinner clarifies that the arrow click registered while images load.
+                        <div className="absolute inset-0 bg-white/40 grid place-items-center">
+                          <Loader2 className="h-6 w-6 animate-spin text-neutral-600" />
+                        </div>
                       )}
                     </>
                   ) : (

@@ -1,14 +1,21 @@
-import { useMemo, useState, useEffect } from "react";
+/*
+  OwnerShortlists renders the owner dashboard feed of carts/orders. It keeps a local catalog
+  mirror, hydrates missing products on demand, and sorts status buckets so active carts rise to
+  the top. Any change here should maintain that contract so other owner views inherit the cache.
+*/
+import { useMemo, useState, useEffect, useRef } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Eye, MessageCircle, CheckCircle2, Plus, X } from "lucide-react";
+import { Eye, MessageCircle, CheckCircle2, Plus, X, ShoppingCart, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { confirmOrder as apiConfirmOrder, cancelOrder as apiCancelOrder, listOrdersPaged, removeItemFromOrder, addItemToOrder, trackEvent } from "../../shared";
+import { confirmOrder as apiConfirmOrder, cancelOrder as apiCancelOrder, listOrdersPaged, removeItemFromOrder, addItemToOrder, trackEvent, getOwnerProduct } from "../../shared";
 import { formatDateTime, waLink } from "../../shared";
 
+// Shortlists consumes orders + product catalog. Whenever an order references an unknown product
+// we fetch it and merge into the shared catalog so other owner views stay in sync.
 const STATUS = {
   PENDING: 'pending',
   CONFIRMED: 'confirmed',
@@ -17,6 +24,7 @@ const STATUS = {
   CANCELLED: 'CANCELLED',
 };
 
+// Sort order ensures active carts bubble to the top, followed by pending/abandoned/etc.
 const STATUS_PRIORITY = {
   [STATUS.ACTIVE_CART]: 0,
   [STATUS.PENDING]: 1,
@@ -41,8 +49,53 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
   const [loadingMore, setLoadingMore] = useState(false);
   const [sentinel, setSentinel] = useState(null);
   const [initialLoading, setInitialLoading] = useState(false);
+  const missingFetchRef = useRef(new Set());
+  const [confirmingId, setConfirmingId] = useState(null);
 
+  // Keep a fast lookup map so renders are O(1) when referencing product metadata.
   useEffect(()=>{ setCatalogMap(new Map(products.map(p=>[p.id,p]))); }, [products]);
+
+  // Orders may include products the owner has never viewed; hydrate those gaps here.
+  useEffect(()=>{
+    const missingIds = [];
+    const map = catalogMap;
+    orders.forEach(order => {
+      if (!order) return;
+      const candidates = [...(order.items || []), ...((order.removed_items || []))];
+      candidates.forEach(id => {
+        if (!id) return;
+        if (map.has(id)) return;
+        if (missingFetchRef.current.has(id)) return;
+        missingFetchRef.current.add(id);
+        missingIds.push(id);
+      });
+    });
+    if (!missingIds.length) return;
+    const batch = missingIds.slice(0, 10);
+    let cancelled = false;
+    (async ()=>{
+      try{
+        const results = await Promise.all(batch.map(id => getOwnerProduct(id).catch(()=>null)));
+        if (cancelled) return;
+        const valid = results.filter(Boolean);
+        if (valid.length){
+          setCatalogMap(prev => {
+            const next = new Map(prev);
+            valid.forEach(prod => { if (prod?.id) next.set(prod.id, prod); });
+            return next;
+          });
+          setProducts(prev => {
+            const mapProd = new Map(prev.map(p=>[p.id,p]));
+            valid.forEach(prod => { if (prod?.id && !mapProd.has(prod.id)) mapProd.set(prod.id, prod); });
+            return Array.from(mapProd.values());
+          });
+        }
+      }finally{
+        batch.forEach(id => missingFetchRef.current.delete(id));
+      }
+    })();
+    return ()=>{ cancelled = true; };
+  }, [orders, catalogMap, setProducts]);
 
   useEffect(()=>{
     // initial page if orders empty
@@ -73,8 +126,9 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
 
   const map = catalogMap;
 
+  // Merge orders with catalog info and sort by status priority + recency.
   const merged = useMemo(()=>{
-    return orders.map(o=>({
+      return orders.map(o=>({
       ...o,
       _total: o.items.reduce((s,id)=> s + (map.get(id)?.price||0), 0),
       _updatedMs: Date.parse(o.updated_at || o.created_at || 0) || 0,
@@ -93,10 +147,14 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
   async function confirm(o){
     if (!o?.id) return;
     try{
+      setConfirmingId(o.id);
       const updated = await apiConfirmOrder(o.id);
       setOrders(prev=> prev.map(x=> x.id===o.id ? updated : x));
       toast.success('Order ' + o.id + ' confirmed');
     }catch(e){ console.error(e); toast.error("Failed to confirm order"); }
+    finally{
+      setConfirmingId(null);
+    }
   }
 
   async function cancel(o){
@@ -142,20 +200,36 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
           }
           return `Updated: ${updatedText}`;
         })();
+        const isCart = o.status === STATUS.ACTIVE_CART || o.status === STATUS.ABANDONED_CART;
         const canConfirm = ![STATUS.CONFIRMED, STATUS.CANCELLED].includes(o.status);
         const canCancel = ![STATUS.CANCELLED, STATUS.CONFIRMED].includes(o.status);
         return (
-        <Card key={o.id} className="p-3 space-y-2">
+        <Card
+          key={o.id}
+          className={`p-3 space-y-2 border ${isCart ? 'border-blue-200 bg-blue-50/60' : ''}`}
+        >
           <div className="flex items-center justify-between">
             <div className="font-medium">{o.id}</div>
             <Badge variant="outline" className={statusMeta.className}>{statusMeta.label}</Badge>
           </div>
+          {isCart && (
+            <div className="flex items-center gap-2 rounded-md border border-blue-200 bg-blue-100/70 px-2 py-1 text-xs text-blue-800">
+              <ShoppingCart className="h-3.5 w-3.5" />
+              <span>{o.status === STATUS.ACTIVE_CART ? 'Customer is still browsing this cart.' : 'Cart was abandoned; items remain for quick follow up.'}</span>
+            </div>
+          )}
           <div className="text-sm text-neutral-600">Customer: {o.customer_phone}</div>
           <div className="text-xs text-neutral-500">Created: {createdText} • {timelineText}</div>
           <div className="grid grid-cols-3 gap-2">
             {o.items.map(id=>{
               const p = map.get(id);
-              if (!p) return null;
+              if (!p){
+                return (
+                  <div key={id} className="h-24 w-full border border-dashed border-neutral-300 rounded-lg grid place-items-center text-[11px] text-neutral-500 bg-neutral-50">
+                    Loading {id}…
+                  </div>
+                );
+              }
               return (
                 <div key={id} className="relative">
                   <img src={p.images?.[0]} alt={p.title} loading="lazy" decoding="async" className="h-24 w-full object-cover rounded-lg" onClick={()=>setPreview({ url:p.images?.[0], product:p, order:o })} />
@@ -170,7 +244,14 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
               <div className="grid grid-cols-3 gap-2">
                 {o.removed_items.map(id=>{
                   const p = map.get(id);
-                  return p ? (
+                  if (!p){
+                    return (
+                      <div key={id} className="h-16 w-full border border-dashed border-neutral-300 rounded grid place-items-center text-[10px] text-neutral-500 bg-neutral-50">
+                        Loading {id}…
+                      </div>
+                    );
+                  }
+                  return (
                     <div key={id} className="relative">
                       <img src={p.images?.[0]} alt={p.title} loading="lazy" decoding="async" className="h-16 w-full object-cover rounded"/>
                       <Button size="icon" variant="secondary" className="absolute top-1 right-1 h-7 w-7" onClick={async()=>{
@@ -183,7 +264,7 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
                         <Plus className="h-4 w-4"/>
                       </Button>
                     </div>
-                  ) : null;
+                  );
                 })}
               </div>
             </div>
@@ -201,9 +282,9 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
               <X className="h-4 w-4"/>
               <span>Cancel</span>
             </Button>
-            <Button className="flex-1 flex items-center justify-center gap-2" variant={canConfirm ? 'default' : 'secondary'} disabled={!canConfirm} onClick={()=> canConfirm && confirm(o)}>
-              <CheckCircle2 className="h-4 w-4"/>
-              <span>Confirm</span>
+            <Button className="flex-1 flex items-center justify-center gap-2" variant={canConfirm ? 'default' : 'secondary'} disabled={!canConfirm || confirmingId===o.id} onClick={()=> canConfirm && confirm(o)}>
+              {confirmingId===o.id ? <Loader2 className="h-4 w-4 animate-spin"/> : <CheckCircle2 className="h-4 w-4"/>}
+              <span>{confirmingId===o.id ? 'Confirming...' : 'Confirm'}</span>
             </Button>
           </div>
         </Card>
