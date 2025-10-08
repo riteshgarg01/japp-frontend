@@ -3,7 +3,7 @@
   mirror, hydrates missing products on demand, and sorts status buckets so active carts rise to
   the top. Any change here should maintain that contract so other owner views inherit the cache.
 */
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Eye, MessageCircle, CheckCircle2, Plus, X, ShoppingCart, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { confirmOrder as apiConfirmOrder, cancelOrder as apiCancelOrder, listOrdersPaged, removeItemFromOrder, addItemToOrder, trackEvent, getOwnerProduct } from "../../shared";
+import { confirmOrder as apiConfirmOrder, cancelOrder as apiCancelOrder, listOrdersPaged, removeItemFromOrder, addItemToOrder, trackEvent, hydrateOwnerProducts, primeOwnerProductCache } from "../../shared";
 import { formatDateTime, waLink } from "../../shared";
 
 // Shortlists consumes orders + product catalog. Whenever an order references an unknown product
@@ -41,7 +41,8 @@ const STATUS_META = {
   [STATUS.CANCELLED]: { label: 'Cancelled', className: 'text-red-700 border-red-200 bg-red-50' },
 };
 
-export default function OwnerShortlists({ products, orders, setOrders, setProducts }){
+export default function OwnerShortlists({ products, orders, setOrders, setProducts, onInventoryChange }){
+  const notifyInventoryChange = onInventoryChange || (()=>{});
   const [q, setQ] = useState("");
   const [preview, setPreview] = useState(null);
   const [catalogMap, setCatalogMap] = useState(()=> new Map(products.map(p=>[p.id,p])));
@@ -49,7 +50,6 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
   const [loadingMore, setLoadingMore] = useState(false);
   const [sentinel, setSentinel] = useState(null);
   const [initialLoading, setInitialLoading] = useState(false);
-  const missingFetchRef = useRef(new Set());
   const [confirmingId, setConfirmingId] = useState(null);
   const [cancelingId, setCancelingId] = useState(null);
   const [removingKey, setRemovingKey] = useState(null);
@@ -60,48 +60,51 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
 
   // Orders may include products the owner has never viewed; hydrate those gaps here.
   useEffect(()=>{
-    const missingIds = [];
+    // Use the shared hydrator so Shortlists and other owner views coalesce their product lookups
+    // and avoid duplicated network calls for unseen catalog entries. Many carts reference products
+    // the owner has never scrolled to in Inventory; this keeps thumbnails populated without
+    // requiring that detour.
     const map = catalogMap;
+    const missingIds = [];
     orders.forEach(order => {
       if (!order) return;
-      const candidates = [...(order.items || []), ...((order.removed_items || []))];
-      candidates.forEach(id => {
+      [...(order.items || []), ...(order.removed_items || [])].forEach(id => {
         if (!id) return;
         if (map.has(id)) return;
-        if (missingFetchRef.current.has(id)) return;
-        missingFetchRef.current.add(id);
         missingIds.push(id);
       });
     });
     if (!missingIds.length) return;
-    const batch = missingIds.slice(0, 10);
     let cancelled = false;
     (async ()=>{
       try{
-        const results = await Promise.all(batch.map(id => getOwnerProduct(id).catch(()=>null)));
-        if (cancelled) return;
-        const valid = results.filter(Boolean);
-        if (valid.length){
-          setCatalogMap(prev => {
-            const next = new Map(prev);
-            valid.forEach(prod => { if (prod?.id) next.set(prod.id, prod); });
-            return next;
+        const hydrated = await hydrateOwnerProducts(missingIds.slice(0, 25));
+        if (cancelled || !hydrated.length) return;
+        primeOwnerProductCache(hydrated);
+        setCatalogMap(prev => {
+          const next = new Map(prev);
+          hydrated.forEach(prod => { if (prod?.id) next.set(prod.id, prod); });
+          return next;
+        });
+        setProducts(prev => {
+          const mapProd = new Map(prev.map(p=>[p.id,p]));
+          hydrated.forEach(prod => {
+            if (!prod?.id) return;
+            const existing = mapProd.get(prod.id) || {};
+            mapProd.set(prod.id, { ...existing, ...prod });
           });
-          setProducts(prev => {
-            const mapProd = new Map(prev.map(p=>[p.id,p]));
-            valid.forEach(prod => { if (prod?.id && !mapProd.has(prod.id)) mapProd.set(prod.id, prod); });
-            return Array.from(mapProd.values());
-          });
-        }
-      }finally{
-        batch.forEach(id => missingFetchRef.current.delete(id));
+          return Array.from(mapProd.values());
+        });
+      } catch (err){
+        console.error(err);
       }
     })();
     return ()=>{ cancelled = true; };
   }, [orders, catalogMap, setProducts]);
 
   useEffect(()=>{
-    // initial page if orders empty
+    // Bootstrap the first slice of orders so the owner immediately sees active carts even if the
+    // parent did not pre-populate them.
     if (!orders?.length){
       setInitialLoading(true);
       listOrdersPaged({ limit: 20, offset: 0 }).then(data=>{
@@ -110,6 +113,8 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
     }
   }, []);
 
+  // Infinite scroll loader similar to InventoryView: when the sentinel comes into view we either
+  // fetch the next page or stop if we've exhausted the cursor.
   useEffect(()=>{
     if (!sentinel) return;
     const io = new IntersectionObserver((ents)=>{
@@ -147,6 +152,8 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
     return text.toLowerCase().includes(q.toLowerCase());
   });
 
+  // Confirming an order updates the backend, patches local state, and notifies the parent so the
+  // inventory badge reflects the new stock count without a reload.
   async function confirm(o){
     if (!o?.id) return;
     try{
@@ -154,12 +161,15 @@ export default function OwnerShortlists({ products, orders, setOrders, setProduc
       const updated = await apiConfirmOrder(o.id);
       setOrders(prev=> prev.map(x=> x.id===o.id ? updated : x));
       toast.success('Order ' + o.id + ' confirmed');
+      notifyInventoryChange();
     }catch(e){ console.error(e); toast.error("Failed to confirm order"); }
     finally{
       setConfirmingId(null);
     }
   }
 
+  // Cancelling mirrors confirm but leaves inventory untouched; we still update local state so the
+  // row reflects the new status immediately.
   async function cancel(o){
     if (!o?.id) return;
     try{

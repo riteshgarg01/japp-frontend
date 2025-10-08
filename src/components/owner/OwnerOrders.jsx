@@ -7,16 +7,20 @@ import { useEffect, useRef, useState } from "react";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { confirmOrder as apiConfirmOrder, getOwnerProduct } from "../../shared";
+import { confirmOrder as apiConfirmOrder, hydrateOwnerProducts, primeOwnerProductCache } from "../../shared";
 import OrderRow from "./OrderRow.jsx";
 
 // OwnerOrders mirrors the pending/confirmed dashboards. We keep a local catalog cache so
 // orders referencing unseen products still render thumbnails.
-export default function OwnerOrders({ products, setProducts, orders, setOrders, ownerPhone }){
+export default function OwnerOrders({ products, setProducts, orders, setOrders, ownerPhone, onInventoryChange }){
+  const notifyInventoryChange = onInventoryChange || (()=>{});
   const [catalogMap, setCatalogMap] = useState(()=> new Map(products.map(p=>[p.id,p])));
   const missingRef = useRef(new Set());
   useEffect(()=>{ setCatalogMap(new Map(products.map(p=>[p.id,p]))); }, [products]);
-  // Fetch any products referenced by orders that are missing from the local catalog.
+  // Fetch any products referenced by orders that are missing from the local catalog and merge the
+  // hydrated payload back into the shared cache so other owner views benefit immediately. Without
+  // this shared hydrator the pending/confirmed columns would render placeholder boxes until the
+  // owner manually opened Inventory (which happens to populate the cache as a side effect).
   useEffect(()=>{
     const map = catalogMap;
     const toFetch = [];
@@ -34,22 +38,24 @@ export default function OwnerOrders({ products, setProducts, orders, setOrders, 
     let cancelled = false;
     (async ()=>{
       try{
-        const results = await Promise.all(toFetch.map(id=> getOwnerProduct(id).catch(()=>null)));
-        if (cancelled) return;
-        const valid = results.filter(Boolean);
-        if (valid.length){
-          setCatalogMap(prev => {
-            const next = new Map(prev);
-            valid.forEach(prod => { if (prod?.id) next.set(prod.id, prod); });
-            return next;
+        const hydrated = await hydrateOwnerProducts(toFetch.slice(0, 25));
+        if (cancelled || !hydrated.length) return;
+        primeOwnerProductCache(hydrated);
+        setCatalogMap(prev => {
+          const next = new Map(prev);
+          hydrated.forEach(prod => { if (prod?.id) next.set(prod.id, prod); });
+          return next;
+        });
+        setProducts(prev => {
+          const mapProd = new Map(prev.map(p=>[p.id,p]));
+          hydrated.forEach(prod => {
+            if (!prod?.id) return;
+            const existing = mapProd.get(prod.id) || {};
+            mapProd.set(prod.id, { ...existing, ...prod });
           });
-          setProducts(prev => {
-            const mapProd = new Map(prev.map(p=>[p.id,p]));
-            valid.forEach(prod => { if (prod?.id && !mapProd.has(prod.id)) mapProd.set(prod.id, prod); });
-            return Array.from(mapProd.values());
-          });
-        }
-      }finally{
+          return Array.from(mapProd.values());
+        });
+      } finally {
         toFetch.forEach(id=> missingRef.current.delete(id));
       }
     })();
@@ -59,6 +65,9 @@ export default function OwnerOrders({ products, setProducts, orders, setOrders, 
   const pending = orders.filter(o=>o.status==='pending');
   const confirmed = orders.filter(o=>o.status==='confirmed');
 
+  // When an order is confirmed we decrement local quantities so the UI matches the backend’s
+  // atomic update that happens server-side. We also feed the shared cache so other components see
+  // the new stock levels immediately.
   function updateInventoryForOrder(order){
     const newProducts = products.map(p=>{
       if (!order.items.includes(p.id)) return p;
@@ -66,17 +75,23 @@ export default function OwnerOrders({ products, setProducts, orders, setOrders, 
       return { ...p, qty: newQty, available: newQty>0 && p.available };
     });
     setProducts(newProducts);
+    primeOwnerProductCache(newProducts);
   }
 
+  // Spot-confirm flow: persist to API, sync local catalog, raise toast, then notify parent so the
+  // inventory stats badge refreshes.
   async function confirmOrder(order){
     try{
       await apiConfirmOrder(order.id);
       updateInventoryForOrder(order);
       setOrders(orders.map(o=>o.id===order.id?{...o,status:'confirmed'}:o));
       toast.success(`Order ${order.id} confirmed`);
+      notifyInventoryChange();
     }catch(e){ console.error(e); toast.error("Failed to confirm order"); }
   }
 
+  // Local removal keeps the UI responsive while higher-level flows (like re-adding items) operate
+  // on the updated structure.
   function removeItemFromShortlist(orderId, productId){
     setOrders(orders.map(o=> o.id===orderId ? {...o, items: o.items.filter(id=>id!==productId)} : o));
   }

@@ -90,6 +90,16 @@ export async function listOwnerProductsPaged(params = {}){
   return await r.json();
 }
 
+export async function getOwnerInventoryStats(){
+  // Mirrors the new backend stats endpoint so dashboards can display accurate counts without
+  // forcing a full product sync on first paint. I intentionally keep this thin wrapper so we can
+  // evolve response shape server-side while callers stay isolated from fetch details.
+  const url = (API_BASE ? `${API_BASE}/owner/inventory/stats` : '/owner/inventory/stats').replace(window.location.origin, '');
+  const r = await apiFetch(url);
+  if (!r.ok) throw new Error("load inventory stats failed");
+  return await r.json();
+}
+
 export async function listOrdersPaged(params = {}){
   const u = API_BASE
     ? new URL(`${API_BASE}/orders`)

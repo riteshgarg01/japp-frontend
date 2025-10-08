@@ -13,12 +13,23 @@ export default defineConfig({
       '/products':        { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/orders':          { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/owner/products':  { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/owner/inventory': { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/events':          { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/admin':           { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/ai':              { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/config':          { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/health':          { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/cart':            { target: 'http://127.0.0.1:8000', changeOrigin: true },
+    },
+  },
+  test: {
+    environment: 'jsdom',
+    setupFiles: './vitest.setup.js',
+    globals: true,
+    css: true,
+    mockReset: true,
+    coverage: {
+      provider: 'v8',
     },
   },
 })

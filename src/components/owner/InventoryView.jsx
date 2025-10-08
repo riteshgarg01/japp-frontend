@@ -8,10 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Pencil, Trash2, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import { updateProduct as apiUpdateProduct, deleteProduct as apiDeleteProduct, fmt, listOwnerProductsPaged, getProductImages, getOwnerProduct, reprocessProduct } from "../../shared";
+import { updateProduct as apiUpdateProduct, deleteProduct as apiDeleteProduct, fmt, listOwnerProductsPaged, getProductImages, getOwnerProduct, reprocessProduct, primeOwnerProductCache } from "../../shared";
 import UploadView from "./UploadView.jsx";
 
-export default function InventoryView({ products, setProducts }){
+export default function InventoryView({ products, setProducts, onInventoryChange }){
+  const notifyInventoryChange = onInventoryChange || (()=>{});
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [q, setQ] = useState("");
@@ -26,15 +27,23 @@ export default function InventoryView({ products, setProducts }){
   const processingIds = useMemo(()=> products.filter(p=> (p.status || '').toLowerCase() === 'processing').map(p=>p.id), [products]);
   const processingKey = useMemo(()=> processingIds.slice().sort().join('|'), [processingIds]);
 
+  // Flip the availability flag locally for snappy UI, persist to the backend, then refresh shared
+  // caches + badge so the rest of the dashboard reflects the new state.
   async function toggleAvailability(id){
     let target = products.find(p=>p.id===id);
     if (!target) return;
     const next = { ...target, available: !target.available };
     setProducts(products.map(p=> p.id===id ? next : p));
-    try{ await apiUpdateProduct(next); }catch(e){ console.error(e); toast.error("Failed to update availability"); }
+    primeOwnerProductCache([next]);
+    try{
+      await apiUpdateProduct(next);
+      notifyInventoryChange();
+    }catch(e){ console.error(e); toast.error("Failed to update availability"); }
   }
 
-  function updateField(id, field, value){
+  // Generic product field updater (currently used for qty). We clamp values locally, push the
+  // patch to the server, and then trigger the global inventory stats refresh.
+  async function updateField(id, field, value){
     let nextObj = null;
     setProducts(products.map(p=> {
       if (p.id!==id) return p;
@@ -43,16 +52,30 @@ export default function InventoryView({ products, setProducts }){
       nextObj = next;
       return next;
     }));
-    if (nextObj){ apiUpdateProduct(nextObj).catch((e)=>{ console.error(e); toast.error("Failed to update product"); }); }
+    if (nextObj) primeOwnerProductCache([nextObj]);
+    if (nextObj){
+      try{
+        await apiUpdateProduct(nextObj);
+        notifyInventoryChange();
+      }catch(e){ console.error(e); toast.error("Failed to update product"); }
+    }
   }
 
+  // Optimistically remove a product from the local array while we delete it on the server. If the
+  // API call fails we stitch the old list back into place to keep the UI consistent.
   async function removeProduct(id){
     const prev = products;
     setProducts(products.filter(p=>p.id!==id));
-    try{ await apiDeleteProduct(id); toast.success("Deleted"); }
+    try{
+      await apiDeleteProduct(id);
+      toast.success("Deleted");
+      notifyInventoryChange();
+    }
     catch(e){ console.error(e); toast.error("Delete failed"); setProducts(prev); }
   }
 
+  // Lazy-load the full image gallery when the owner opens the edit dialog so the modal always has
+  // the most recent pictures without bloating the list view payload.
   async function openEdit(p){
     if (editLoadingId) return;
     setEditLoadingId(p.id);
@@ -70,19 +93,31 @@ export default function InventoryView({ products, setProducts }){
       setEditLoadingId(null);
     }
   }
-  function saveEdit(updated){ setProducts(products.map(p=> p.id===updated.id ? updated : p)); setEditOpen(false); setEditing(null); }
+  function saveEdit(updated){
+    setProducts(products.map(p=> p.id===updated.id ? updated : p));
+    primeOwnerProductCache([updated]);
+    setEditOpen(false);
+    setEditing(null);
+    notifyInventoryChange();
+  }
 
+  // Kick off the async reprocess job and merge the server’s response back into local + shared
+  // caches so the UI reflects pending/failed transitions instantly.
   async function handleReprocess(id){
     try{
       const updated = await reprocessProduct(id);
       toast.info('Image processing restarted');
       setProducts(prev=> prev.map(item=> item.id === updated.id ? { ...item, ...updated } : item));
+      primeOwnerProductCache([updated]);
     }catch(e){
       console.error(e);
       toast.error('Failed to reprocess');
     }
   }
 
+  // Owner inventory pagination mirrors the backend cursor. Each page merges into local state,
+  // primes the shared cache, and marks the offset as fetched so the IntersectionObserver does not
+  // hammer the endpoint.
   async function fetchPage(limit, offset){
     if (loadingMore || fetchedOffsets.has(offset)) return;
     if (offset===0) setLoading(true); else setLoadingMore(true);
@@ -92,7 +127,9 @@ export default function InventoryView({ products, setProducts }){
       setProducts(prev=>{
         const map = new Map(prev.map(p=>[p.id,p]));
         for (const it of (data.items||[])) map.set(it.id, it);
-        return Array.from(map.values());
+        const merged = Array.from(map.values());
+        primeOwnerProductCache(merged);
+        return merged;
       });
       setNextOffset(data.next_offset ?? null);
     } catch (e) {
@@ -106,6 +143,11 @@ export default function InventoryView({ products, setProducts }){
     }
   }
 
+  // Poll a small subset of products that are in the AI processing queue so status badges update
+  // without the owner needing to refresh.
+  // IntersectionObserver drives infinite scroll: when the sentinel enters view we either request
+  // the next page from the server or simply expand the client-side slice if we've exhausted the
+  // backend cursor.
   useEffect(()=>{
     if (!sentinel) return;
     const io = new IntersectionObserver((entries)=>{
@@ -119,6 +161,7 @@ export default function InventoryView({ products, setProducts }){
     return ()=> io.disconnect();
   }, [sentinel, products.length, nextOffset]);
 
+  // Kick off the first page as soon as the component mounts so the grid fills with owner data.
   useEffect(()=>{ fetchPage(12, 0); }, []);
 
   useEffect(()=>{
@@ -144,6 +187,9 @@ export default function InventoryView({ products, setProducts }){
           }
           return Array.from(map.values());
         });
+        // When background processing flips items to ready state we need the inventory stats badge
+        // to refresh even if the owner never touches the grid.
+        notifyInventoryChange();
       } catch (err) {
         console.error(err);
       }

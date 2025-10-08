@@ -26,11 +26,15 @@ const IMAGE_CACHE_LIMIT = 60;
 
 // ShopView owns customer-facing state (filters, shortlist, gallery cache). Any cart sync or
 // image fetch should flow through here so other components can treat the server as source of truth.
+const DEFAULT_PRICE_UPPER = 20000;
+const FALLBACK_PRICE_MAX = 5000;
+
 export default function ShopView({ products, onOrderCreate, ownerPhone, isLoading }){
   const [cat, setCat] = useState("All");
   const [styleFilter, setStyleFilter] = useState("All");
-  const [priceRange, setPriceRange] = useState([0, 20000]);
+  const [priceRange, setPriceRange] = useState([0, DEFAULT_PRICE_UPPER]);
   const [q, setQ] = useState("");
+  const [qInput, setQInput] = useState("");
   const [shortlist, setShortlist] = useState(()=>{
     try{ return JSON.parse(localStorage.getItem("ac_shortlist")||"[]"); }catch{ return []; }
   });
@@ -38,8 +42,13 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const [shortlistOpen, setShortlistOpen] = useState(false);
   const [custPhoneMobile, setCustPhoneMobile] = useState("");
   const [hideUnavailable, setHideUnavailable] = useState(false);
-  const [displayCount, setDisplayCount] = useState(10);
-  const loadStep = 20;
+  // Tune how many products we fetch/render so the first viewport fills on mobile without multiple
+  // round-trips, while keeping subsequent pagination lightweight. Combined with the larger
+  // IntersectionObserver margin below this lets us start the next page earlier so the user rarely
+  // hits the bottom before data arrives.
+  const INITIAL_PAGE_SIZE = 24;
+  const PAGE_SIZE = 20;
+  const [displayCount, setDisplayCount] = useState(INITIAL_PAGE_SIZE);
   const [preview, setPreview] = useState(null); // { product, index }
   const [imgIndexById, setImgIndexById] = useState({});
   const [galleryLoading, setGalleryLoading] = useState({});
@@ -54,11 +63,22 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
     }catch{}
     return {};
   });
+  // Keep a ref in sync with the latest gallery cache so throttled async fetches can resolve using
+  // the freshest data without needing to depend on the state setter inside the queue processor.
+  const imagesByIdRef = useRef(imagesById);
+  useEffect(()=>{ imagesByIdRef.current = imagesById; }, [imagesById]);
   // Deduplicate in-flight image fetches per product to avoid repeated GETs
   const inflightImgsRef = useRef({});
   // Remember products we already attempted to fetch (even if they only have 1 image)
   const fetchedIdsRef = useRef(new Set());
   const cacheHydratedRef = useRef(false);
+  // Throttle gallery hydration so mobile networks do not get flooded by simultaneous image calls.
+  // We assign simple priority buckets so the active card is hydrated first, then in-viewport items,
+  // finally background rows that the user may never see.
+  const MAX_PARALLEL_IMAGE_FETCHES = 3;
+  const imageQueueRef = useRef([]); // [{ pid, product, priority, resolve, reject }]
+  const activeImageFetchesRef = useRef(0);
+  const IMAGE_PRIORITY = useMemo(()=>({ immediate: 0, high: 1, normal: 2, background: 3 }), []);
   const [descExpanded, setDescExpanded] = useState(new Set());
   const touchRef = useRef({ startX: 0, startY: 0, t: 0 });
   const initialShortlistRef = useRef(shortlist);
@@ -86,6 +106,16 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
       if (id) fetchedIdsRef.current.add(id);
     });
   }, [imagesById]);
+
+  // Debounce search input so we are not hitting the paged endpoint for every keystroke on mobile.
+  // We update the real query 250ms after the user pauses typing which keeps the UI responsive on
+  // flaky connections without sacrificing accuracy.
+  useEffect(()=>{
+    const handle = setTimeout(()=>{
+      setQ(qInput);
+    }, 250);
+    return ()=> clearTimeout(handle);
+  }, [qInput]);
 
   // lightweight session + phone persistence
   const [sessionId, setSessionId] = useState(()=> localStorage.getItem('ac_session_id') || `sess-${Math.random().toString(36).slice(2,8)}-${Date.now().toString(36)}`);
@@ -199,19 +229,21 @@ useEffect(()=>{
   }, [styleOptions, styleFilter]);
 
   const priceSliderMax = useMemo(()=>{
-    const values = aggregateProducts.map(p=>Number(p?.price)||0);
-    return Math.max(5000, ...values, 0);
+    const values = aggregateProducts.map(p=>Number(p?.price)||0).filter(Boolean);
+    if (values.length === 0) {
+      return FALLBACK_PRICE_MAX;
+    }
+    return Math.max(...values);
   }, [aggregateProducts]);
 
   useEffect(()=>{
     setPriceRange(prev=>{
-      if (prev[0] === 0 && prev[1] === 20000){
-        return [0, priceSliderMax];
+      const upperWasFallback = prev[1] === DEFAULT_PRICE_UPPER || prev[1] === FALLBACK_PRICE_MAX;
+      let nextUpper = prev[1];
+      if (upperWasFallback || prev[1] > priceSliderMax){
+        nextUpper = priceSliderMax;
       }
-      if (prev[1] > priceSliderMax){
-        return [Math.min(prev[0], priceSliderMax), priceSliderMax];
-      }
-      return prev;
+      return [Math.min(prev[0], nextUpper), nextUpper];
     });
   }, [priceSliderMax]);
 
@@ -230,7 +262,7 @@ useEffect(()=>{
 
   // Reset lazy display and server pagination when filters/search change
   useEffect(()=>{
-    setDisplayCount(10);
+    setDisplayCount(INITIAL_PAGE_SIZE);
     setCatalog([]);
     setTotal(0);
     setNextOffset(0);
@@ -259,7 +291,8 @@ useEffect(()=>{
     });
     setTotal(data.total || 0);
     setNextOffset(data.next_offset ?? null);
-    // Kick off gallery fetches for any new products so carousel feels instant.
+    // Kick off gallery fetches for any new products so carousel feels instant. We enqueue them as
+    // background work so the queue can prioritise the card the shopper is actively touching.
     incoming.forEach(item => {
       if (!item?.id) return;
       const cached = imagesById[item.id];
@@ -268,7 +301,7 @@ useEffect(()=>{
         return;
       }
       if (inflightImgsRef.current[item.id]) return;
-      ensureImages(item);
+      ensureImages(item, 'background');
     });
     setLoading(false);
     setLoadingMore(false);
@@ -282,12 +315,12 @@ useEffect(()=>{
       const [entry] = entries;
       if (entry.isIntersecting){
         if (nextOffset != null) {
-          fetchPage(loadStep, nextOffset).catch(()=>{});
+          fetchPage(PAGE_SIZE, nextOffset).catch(()=>{});
         } else {
-          setDisplayCount((n)=> Math.min(filtered.length, n + loadStep));
+          setDisplayCount((n)=> Math.min(filtered.length, n + PAGE_SIZE));
         }
       }
-    }, { rootMargin: '800px' });
+    }, { rootMargin: '1400px' }); // tall margin so we prefetch the next page before the user arrives
     io.observe(sentinelRef);
     return ()=> io.disconnect();
   }, [sentinelRef, nextOffset, filtered.length]);
@@ -295,7 +328,7 @@ useEffect(()=>{
   // Initial page load and on filter changes
   useEffect(()=>{
     fetchedOffsetsRef.current.clear();
-    fetchPage(10, 0).catch(()=>{});
+    fetchPage(INITIAL_PAGE_SIZE, 0).catch(()=>{});
   }, [cat, priceRange[0], priceRange[1], q, hideUnavailable, styleFilter]);
 
   // Toggle shortlist locally first (for snappy UI) then sync with backend.
@@ -318,24 +351,23 @@ useEffect(()=>{
   }
   function isInCart(id){ return shortlist.includes(id); }
 
-  async function ensureImages(p){
-    const pid = p.id;
-    if (!pid) return [];
-    const cached = imagesById[pid];
-    if ((cached?.length || 0) > 1){
-      fetchedIdsRef.current.add(pid);
-      return cached;
-    }
-    if (inflightImgsRef.current[pid]){
-      return inflightImgsRef.current[pid];
-    }
+  // Run the queued gallery fetches respecting the concurrency cap. The queue drains automatically
+  // after each fetch completes so we never exceed the maximum parallel requests even on fast scrolls.
+  function processImageQueue(){
+    if (activeImageFetchesRef.current >= MAX_PARALLEL_IMAGE_FETCHES) return;
+    const queue = imageQueueRef.current;
+    if (!queue.length) return;
+    const task = queue.shift();
+    if (!task) return;
+    activeImageFetchesRef.current += 1;
+    const { pid, product, resolve } = task;
     setGalleryLoadingFlag(pid, true);
-    // Fetch the full gallery once and store it so future navigations are instant.
-    const fetchPromise = (async () => {
+    (async ()=>{
       try{
         const { images } = await getProductImages(pid);
         if (!Array.isArray(images) || images.length === 0){
-          return imagesById[pid] || p.images || [];
+          resolve(imagesByIdRef.current[pid] || product.images || []);
+          return;
         }
         setImagesById(prev => {
           const merged = { ...prev, [pid]: images };
@@ -352,17 +384,49 @@ useEffect(()=>{
           return nextCache;
         });
         fetchedIdsRef.current.add(pid);
-        return images;
+        resolve(images);
       }catch(err){
         console.warn('Failed to load gallery images', err);
-        return imagesById[pid] || p.images || [];
+        resolve(imagesByIdRef.current[pid] || product.images || []);
       }finally{
         setTimeout(()=>{ delete inflightImgsRef.current[pid]; }, 0);
         setGalleryLoadingFlag(pid, false);
+        activeImageFetchesRef.current = Math.max(0, activeImageFetchesRef.current - 1);
+        processImageQueue();
       }
     })();
-    inflightImgsRef.current[pid] = fetchPromise;
-    return fetchPromise;
+  }
+
+  function enqueueImageTask(task){
+    const queue = imageQueueRef.current.slice();
+    queue.push(task);
+    queue.sort((a,b)=>a.priority - b.priority);
+    imageQueueRef.current = queue;
+    processImageQueue();
+  }
+
+  // Fetch the full gallery for a product once, via the throttled queue. Priority is a friendly
+  // name ('immediate', 'high', etc.) so callers can express intent without caring about numbers.
+  function ensureImages(p, priority = 'normal'){
+    const pid = p.id;
+    if (!pid) return Promise.resolve([]);
+    const cached = imagesByIdRef.current[pid];
+    if ((cached?.length || 0) > 1){
+      fetchedIdsRef.current.add(pid);
+      return Promise.resolve(cached);
+    }
+    if (inflightImgsRef.current[pid]){
+      return inflightImgsRef.current[pid];
+    }
+    const mappedPriority = typeof priority === 'number' ? priority : (IMAGE_PRIORITY[priority] ?? IMAGE_PRIORITY.normal);
+    let taskResolve;
+    const promise = new Promise((resolve)=>{
+      taskResolve = resolve;
+    });
+    inflightImgsRef.current[pid] = promise;
+    setGalleryLoadingFlag(pid, true);
+    enqueueImageTask({ pid, product: p, priority: mappedPriority, resolve: taskResolve });
+    return promise;
   }
 
   const dismissOrderBanner = () => {
@@ -383,6 +447,9 @@ useEffect(()=>{
       try{
         const serverCart = await getCart(sessionId, phoneClean);
         if (cancelled) return;
+        if (serverCart === null){
+          return;
+        }
         if (serverCart && Array.isArray(serverCart.items)){
           const normalized = Array.from(new Set(serverCart.items));
           initialShortlistRef.current = normalized;
@@ -410,6 +477,9 @@ useEffect(()=>{
       try{
         const serverCart = await getCart(sessionId, phoneClean);
         if (cancelled) return;
+        if (serverCart === null){
+          return;
+        }
         if (serverCart && Array.isArray(serverCart.items)){
           const normalized = Array.from(new Set(serverCart.items));
           initialShortlistRef.current = normalized;
@@ -473,15 +543,11 @@ useEffect(()=>{
   useEffect(()=>{
     const visible = filtered.slice(0, displayCount);
     // Only trigger fetch for products we haven't attempted yet
-    (async ()=>{
-      try{
-        await Promise.all(visible.map(p=>{
-          if (fetchedIdsRef.current.has(p.id)) return null;
-          if (inflightImgsRef.current[p.id]) return inflightImgsRef.current[p.id];
-          return ensureImages(p);
-        }));
-      }catch{}
-    })();
+    visible.forEach(p=>{
+      if (fetchedIdsRef.current.has(p.id)) return;
+      if (inflightImgsRef.current[p.id]) return;
+      ensureImages(p, 'high');
+    });
     // Depend on the composition of visible ids to avoid thrash
   }, [filtered.length, displayCount]);
 
@@ -494,8 +560,8 @@ useEffect(()=>{
             <Filter className="h-5 w-5" />
           </Button>
           <Input
-            value={q}
-            onChange={(e)=>setQ(e.target.value)}
+            value={qInput}
+            onChange={(e)=>setQInput(e.target.value)}
             onFocus={(e)=>e.target.select()}
             onKeyDown={(e)=>{ if (e.key==='Enter') e.currentTarget.blur(); }}
             placeholder="Search products"
@@ -597,7 +663,7 @@ useEffect(()=>{
                         // Open preview immediately using whatever images we have
                         setPreview({ product: p, index: imgIndexById[p.id]||0 });
                         // Kick off background fetch for full images (do not block UI)
-                        if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p); }
+                        if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p, 'high'); }
                       }} />
                       {showGalleryControls && (
                         <>
@@ -606,11 +672,11 @@ useEffect(()=>{
                             disabled={!canNavigateGallery}
                             onClick={(e)=>{
                               e.stopPropagation();
-                              if (!canNavigateGallery){ ensureImages(p); return; }
+                              if (!canNavigateGallery){ ensureImages(p, 'immediate'); return; }
                               const imgs = (imagesById[p.id] || p.images || []);
                               const len = Math.max(1, imgs.length);
                               setImgIndexById(s=>({ ...s, [p.id]: ((s[p.id]||0) - 1 + len) % len }));
-                              if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p); }
+                              if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p, 'immediate'); }
                             }}
                           >
                             {(!canNavigateGallery && isFetchingGallery) ? <Loader2 className="h-4 w-4 animate-spin"/> : '‹'}
@@ -620,11 +686,11 @@ useEffect(()=>{
                             disabled={!canNavigateGallery}
                             onClick={(e)=>{
                               e.stopPropagation();
-                              if (!canNavigateGallery){ ensureImages(p); return; }
+                              if (!canNavigateGallery){ ensureImages(p, 'immediate'); return; }
                               const imgs = (imagesById[p.id] || p.images || []);
                               const len = Math.max(1, imgs.length);
                               setImgIndexById(s=>({ ...s, [p.id]: ((s[p.id]||0) + 1) % len }));
-                              if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p); }
+                              if (!imagesById[p.id] && (!p.images || p.images.length<=1)) { ensureImages(p, 'immediate'); }
                             }}
                           >
                             {(!canNavigateGallery && isFetchingGallery) ? <Loader2 className="h-4 w-4 animate-spin"/> : '›'}
