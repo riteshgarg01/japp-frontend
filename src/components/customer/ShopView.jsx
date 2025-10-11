@@ -28,6 +28,20 @@ const IMAGE_CACHE_LIMIT = 60;
 // image fetch should flow through here so other components can treat the server as source of truth.
 const DEFAULT_PRICE_UPPER = 20000;
 const FALLBACK_PRICE_MAX = 5000;
+const DESKTOP_INITIAL_PAGE_SIZE = 24;
+const DESKTOP_PAGE_STEP = 20;
+const MOBILE_INITIAL_PAGE_SIZE = 12;
+const MOBILE_PAGE_STEP = 12;
+
+function resolvePageSettings(){
+  if (typeof window !== 'undefined'){
+    const isMobile = window.matchMedia('(max-width: 640px)').matches;
+    if (isMobile){
+      return { initial: MOBILE_INITIAL_PAGE_SIZE, step: MOBILE_PAGE_STEP };
+    }
+  }
+  return { initial: DESKTOP_INITIAL_PAGE_SIZE, step: DESKTOP_PAGE_STEP };
+}
 
 export default function ShopView({ products, onOrderCreate, ownerPhone, isLoading }){
   const [cat, setCat] = useState("All");
@@ -42,13 +56,8 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const [shortlistOpen, setShortlistOpen] = useState(false);
   const [custPhoneMobile, setCustPhoneMobile] = useState("");
   const [hideUnavailable, setHideUnavailable] = useState(false);
-  // Tune how many products we fetch/render so the first viewport fills on mobile without multiple
-  // round-trips, while keeping subsequent pagination lightweight. Combined with the larger
-  // IntersectionObserver margin below this lets us start the next page earlier so the user rarely
-  // hits the bottom before data arrives.
-  const INITIAL_PAGE_SIZE = 24;
-  const PAGE_SIZE = 20;
-  const [displayCount, setDisplayCount] = useState(INITIAL_PAGE_SIZE);
+  const [pageSettings, setPageSettings] = useState(()=>resolvePageSettings());
+  const [displayCount, setDisplayCount] = useState(pageSettings.initial);
   const [preview, setPreview] = useState(null); // { product, index }
   const [imgIndexById, setImgIndexById] = useState({});
   const [galleryLoading, setGalleryLoading] = useState({});
@@ -72,6 +81,7 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   // Remember products we already attempted to fetch (even if they only have 1 image)
   const fetchedIdsRef = useRef(new Set());
   const cacheHydratedRef = useRef(false);
+  const priceRangeInitializedRef = useRef(false);
   // Throttle gallery hydration so mobile networks do not get flooded by simultaneous image calls.
   // We assign simple priority buckets so the active card is hydrated first, then in-viewport items,
   // finally background rows that the user may never see.
@@ -237,15 +247,40 @@ useEffect(()=>{
   }, [aggregateProducts]);
 
   useEffect(()=>{
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(max-width: 640px)');
+    const handler = (source) => {
+      const matches = source.matches;
+      const next = matches ? { initial: MOBILE_INITIAL_PAGE_SIZE, step: MOBILE_PAGE_STEP } : { initial: DESKTOP_INITIAL_PAGE_SIZE, step: DESKTOP_PAGE_STEP };
+      setPageSettings(prev => (prev.initial === next.initial && prev.step === next.step) ? prev : next);
+    };
+    if (mq.addEventListener) mq.addEventListener('change', handler); else mq.addListener(handler);
+    handler(mq);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', handler); else mq.removeListener(handler);
+    };
+  }, []);
+
+  useEffect(()=>{
+    if (aggregateProducts.length === 0) return;
     setPriceRange(prev=>{
       const upperWasFallback = prev[1] === DEFAULT_PRICE_UPPER || prev[1] === FALLBACK_PRICE_MAX;
-      let nextUpper = prev[1];
-      if (upperWasFallback || prev[1] > priceSliderMax){
-        nextUpper = priceSliderMax;
+      if (!priceRangeInitializedRef.current){
+        priceRangeInitializedRef.current = true;
+        if (!upperWasFallback && prev[1] === priceSliderMax && prev[0] === 0) {
+          return prev;
+        }
+        return [0, priceSliderMax];
       }
-      return [Math.min(prev[0], nextUpper), nextUpper];
+      if (prev[1] > priceSliderMax){
+        return [Math.min(prev[0], priceSliderMax), priceSliderMax];
+      }
+      if (upperWasFallback && prev[1] !== priceSliderMax){
+        return [Math.min(prev[0], priceSliderMax), priceSliderMax];
+      }
+      return prev;
     });
-  }, [priceSliderMax]);
+  }, [priceSliderMax, aggregateProducts.length]);
 
   const filtered = catalog.filter(p => {
     const isAvailable = (p.available && (p.qty||0) > 0);
@@ -262,11 +297,11 @@ useEffect(()=>{
 
   // Reset lazy display and server pagination when filters/search change
   useEffect(()=>{
-    setDisplayCount(INITIAL_PAGE_SIZE);
+    setDisplayCount(pageSettings.initial);
     setCatalog([]);
     setTotal(0);
     setNextOffset(0);
-  }, [cat, priceRange, q, hideUnavailable, styleFilter]);
+  }, [cat, priceRange, q, hideUnavailable, styleFilter, pageSettings.initial]);
 
   // Fetch page function
   async function fetchPage(limit, offset){
@@ -315,21 +350,21 @@ useEffect(()=>{
       const [entry] = entries;
       if (entry.isIntersecting){
         if (nextOffset != null) {
-          fetchPage(PAGE_SIZE, nextOffset).catch(()=>{});
+          fetchPage(pageSettings.step, nextOffset).catch(()=>{});
         } else {
-          setDisplayCount((n)=> Math.min(filtered.length, n + PAGE_SIZE));
+          setDisplayCount((n)=> Math.min(filtered.length, n + pageSettings.step));
         }
       }
     }, { rootMargin: '1400px' }); // tall margin so we prefetch the next page before the user arrives
     io.observe(sentinelRef);
     return ()=> io.disconnect();
-  }, [sentinelRef, nextOffset, filtered.length]);
+  }, [sentinelRef, nextOffset, filtered.length, pageSettings.step]);
 
   // Initial page load and on filter changes
   useEffect(()=>{
     fetchedOffsetsRef.current.clear();
-    fetchPage(INITIAL_PAGE_SIZE, 0).catch(()=>{});
-  }, [cat, priceRange[0], priceRange[1], q, hideUnavailable, styleFilter]);
+    fetchPage(pageSettings.initial, 0).catch(()=>{});
+  }, [cat, priceRange[0], priceRange[1], q, hideUnavailable, styleFilter, pageSettings.initial]);
 
   // Toggle shortlist locally first (for snappy UI) then sync with backend.
   function toggleShortlist(id){
@@ -668,7 +703,7 @@ useEffect(()=>{
                       {showGalleryControls && (
                         <>
                           <button
-                            className={`absolute left-2 top-1/2 -translate-y-1/2 rounded-full w-8 h-8 grid place-items-center ${canNavigateGallery ? 'bg-white/70 hover:bg-white/90' : 'bg-white/50 text-neutral-400 cursor-default'}`}
+                            className={`absolute left-1.5 top-1/2 -translate-y-1/2 rounded-full w-10 h-10 grid place-items-center text-base ${canNavigateGallery ? 'bg-white/70 hover:bg-white/90' : 'bg-white/50 text-neutral-400 cursor-default'}`}
                             disabled={!canNavigateGallery}
                             onClick={(e)=>{
                               e.stopPropagation();
@@ -682,7 +717,7 @@ useEffect(()=>{
                             {(!canNavigateGallery && isFetchingGallery) ? <Loader2 className="h-4 w-4 animate-spin"/> : '‹'}
                           </button>
                           <button
-                            className={`absolute right-2 top-1/2 -translate-y-1/2 rounded-full w-8 h-8 grid place-items-center ${canNavigateGallery ? 'bg-white/70 hover:bg-white/90' : 'bg-white/50 text-neutral-400 cursor-default'}`}
+                            className={`absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full w-10 h-10 grid place-items-center text-base ${canNavigateGallery ? 'bg-white/70 hover:bg-white/90' : 'bg-white/50 text-neutral-400 cursor-default'}`}
                             disabled={!canNavigateGallery}
                             onClick={(e)=>{
                               e.stopPropagation();
