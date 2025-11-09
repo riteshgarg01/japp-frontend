@@ -16,7 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import { ShoppingCart, Filter, Image as ImageIcon, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, notifyOwnerByEmail, listProductsPaged, getProductImages, getOrdersBySession, getCart, syncCart, trackEvent, normalizeStyleTag, JEWELLERY_STYLE_OPTIONS, getPriceStats } from "../../shared";
+import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, notifyOwnerByEmail, listProductsPaged, getProductImages, getOrdersBySession, getCart, syncCart, trackEvent, normalizeStyleTag, JEWELLERY_STYLE_OPTIONS, getProductFilters } from "../../shared";
 // ShortlistSheet not used in full-screen view anymore
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 const ORDER_BANNER_DISMISS_KEY = "ac_order_banner_dismissed";
@@ -32,6 +32,7 @@ const DESKTOP_INITIAL_PAGE_SIZE = 24;
 const DESKTOP_PAGE_STEP = 20;
 const MOBILE_INITIAL_PAGE_SIZE = 12;
 const MOBILE_PAGE_STEP = 12;
+const FACET_DEBOUNCE_MS = 250;
 
 function resolvePageSettings(){
   if (typeof window !== 'undefined'){
@@ -82,8 +83,12 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const fetchedIdsRef = useRef(new Set());
   const cacheHydratedRef = useRef(false);
   const priceRangeInitializedRef = useRef(false);
-  const maxPriceBootstrapRef = useRef(false); // Track if we've fetched true max price
-  const [trueMaxPrice, setTrueMaxPrice] = useState(null); // Store the true max from all products
+  const [facetMeta, setFacetMeta] = useState({ categories: [], style_tags: [], min_price: 0, max_price: DEFAULT_PRICE_UPPER });
+  const [priceLimits, setPriceLimits] = useState({ min: 0, max: DEFAULT_PRICE_UPPER });
+  const [priceRangeTouched, setPriceRangeTouched] = useState(false);
+  const facetRequestSeqRef = useRef(0);
+  const [facetLoading, setFacetLoading] = useState(false);
+  const fallbackPriceRef = useRef({ min: 0, max: DEFAULT_PRICE_UPPER });
   // Throttle gallery hydration so mobile networks do not get flooded by simultaneous image calls.
   // We assign simple priority buckets so the active card is hydrated first, then in-viewport items,
   // finally background rows that the user may never see.
@@ -209,6 +214,74 @@ useEffect(()=>{
   const [loadingMore, setLoadingMore] = useState(false);
   const fetchedOffsetsRef = useRef(new Set());
 
+  const sanitizeFilterPayload = useCallback((raw)=>{
+    if (!raw || typeof raw !== 'object'){
+      return { categories: [], style_tags: [], min_price: 0, max_price: 0 };
+    }
+    const categories = Array.isArray(raw.categories)
+      ? raw.categories
+          .map(item => {
+            const value = typeof item?.value === 'string' ? item.value.trim() : '';
+            if (!value) return null;
+            return { value, count: Number(item?.count || 0) || 0 };
+          })
+          .filter(Boolean)
+      : [];
+    const style_tags = Array.isArray(raw.style_tags)
+      ? raw.style_tags
+          .map(item => {
+            const base = typeof item?.value === 'string' ? item.value : '';
+            const label = normalizeStyleTag(base) || base.trim();
+            if (!label) return null;
+            return { value: label, count: Number(item?.count || 0) || 0 };
+          })
+          .filter(Boolean)
+      : [];
+    const min_price = Math.max(0, Number(raw.min_price || 0));
+    const max_price = Math.max(0, Number(raw.max_price || 0));
+    return { categories, style_tags, min_price, max_price };
+  }, []);
+
+  const facetParams = useMemo(()=>{
+    const normalizedCategory = cat === "All" ? undefined : cat;
+    const normalizedStyle = styleFilter === "All" ? undefined : styleFilter;
+    const search = (q || '').trim();
+    return {
+      category: normalizedCategory,
+      style_tag: normalizedStyle,
+      min_price: priceRange[0],
+      max_price: priceRange[1],
+      only_available: hideUnavailable ? true : undefined,
+      q: search || undefined,
+    };
+  }, [cat, styleFilter, priceRange[0], priceRange[1], hideUnavailable, q]);
+
+  useEffect(()=>{
+    const handle = setTimeout(()=>{
+      const seq = facetRequestSeqRef.current + 1;
+      facetRequestSeqRef.current = seq;
+      setFacetLoading(true);
+      getProductFilters(facetParams)
+        .then(data => {
+          if (facetRequestSeqRef.current !== seq) return;
+          setFacetMeta(sanitizeFilterPayload(data));
+        })
+        .catch(err => {
+          if (facetRequestSeqRef.current === seq) {
+            console.warn('Failed to fetch scoped filters', err);
+          }
+        })
+        .finally(()=>{
+          if (facetRequestSeqRef.current === seq) {
+            setFacetLoading(false);
+          }
+        });
+    }, FACET_DEBOUNCE_MS);
+    return ()=>{
+      clearTimeout(handle);
+    };
+  }, [facetParams, sanitizeFilterPayload]);
+
   const aggregateProducts = useMemo(()=>{
     const map = new Map();
     (products || []).forEach((item)=>{ if (item?.id) map.set(item.id, { ...item }); });
@@ -216,41 +289,66 @@ useEffect(()=>{
     return Array.from(map.values());
   }, [products, catalog]);
 
-  const cats = useMemo(()=>{
-    const set = new Set();
-    aggregateProducts.forEach(p=>{ if (p?.category) set.add(p.category); });
-    return ["All", ...Array.from(set).sort()];
+  const fallbackCategoryMap = useMemo(()=>{
+    const map = new Map();
+    aggregateProducts.forEach(p=>{ if (p?.category) map.set(p.category, (map.get(p.category) || 0) + 1); });
+    return map;
   }, [aggregateProducts]);
 
-  const styleOptions = useMemo(()=>{
-    const present = new Set();
+  const fallbackStyleMap = useMemo(()=>{
+    const map = new Map();
     aggregateProducts.forEach(p=>{
       const label = normalizeStyleTag(p?.style_tag);
-      if (label) present.add(label);
+      if (!label) return;
+      map.set(label, (map.get(label) || 0) + 1);
     });
-    const ordered = JEWELLERY_STYLE_OPTIONS.filter(opt=>present.has(opt));
-    const extras = Array.from(present).filter(opt=>!JEWELLERY_STYLE_OPTIONS.includes(opt)).sort();
-    if (ordered.length === 0 && extras.length === 0) return ["All"];
-    return ["All", ...ordered, ...extras];
+    return map;
   }, [aggregateProducts]);
 
+  const fallbackPriceStats = useMemo(()=>{
+    const values = aggregateProducts.map(p=>Number(p?.price)||0).filter(Boolean);
+    if (!values.length){
+      return fallbackPriceRef.current;
+    }
+    const next = { min: Math.min(...values), max: Math.max(...values) };
+    fallbackPriceRef.current = next;
+    return next;
+  }, [aggregateProducts]);
+
+  const categoryOptions = useMemo(()=>{
+    const dynamic = new Map((facetMeta?.categories || []).map(item => [item.value, item.count]));
+    const keys = new Set([...fallbackCategoryMap.keys(), ...dynamic.keys()]);
+    const sorted = Array.from(keys).sort((a,b)=>a.localeCompare(b));
+    return sorted.map(value => ({
+      value,
+      count: dynamic.has(value) ? dynamic.get(value) : (fallbackCategoryMap.get(value) || 0),
+    }));
+  }, [facetMeta, fallbackCategoryMap]);
+
+  const categoryValues = useMemo(()=> categoryOptions.map(opt => opt.value), [categoryOptions]);
   useEffect(()=>{
-    if (styleFilter !== "All" && !styleOptions.includes(styleFilter)){
+    if (cat !== "All" && !categoryValues.includes(cat)){
+      setCat("All");
+    }
+  }, [cat, categoryValues]);
+
+  const styleEntries = useMemo(()=>{
+    const dynamic = new Map((facetMeta?.style_tags || []).map(item => [item.value, item.count]));
+    const keys = new Set([...fallbackStyleMap.keys(), ...dynamic.keys()]);
+    const ordered = JEWELLERY_STYLE_OPTIONS.filter(opt=>keys.has(opt));
+    const extras = Array.from(keys).filter(opt=>!JEWELLERY_STYLE_OPTIONS.includes(opt)).sort();
+    return [...ordered, ...extras].map(value => ({
+      value,
+      count: dynamic.has(value) ? dynamic.get(value) : (fallbackStyleMap.get(value) || 0),
+    }));
+  }, [facetMeta, fallbackStyleMap]);
+
+  const styleValues = useMemo(()=> styleEntries.map(opt => opt.value), [styleEntries]);
+  useEffect(()=>{
+    if (styleFilter !== "All" && !styleValues.includes(styleFilter)){
       setStyleFilter("All");
     }
-  }, [styleOptions, styleFilter]);
-
-  const priceSliderMax = useMemo(()=>{
-    // Use trueMaxPrice if available (from unfiltered bootstrap), otherwise calculate from current products
-    if (trueMaxPrice !== null) {
-      return trueMaxPrice;
-    }
-    const values = aggregateProducts.map(p=>Number(p?.price)||0).filter(Boolean);
-    if (values.length === 0) {
-      return FALLBACK_PRICE_MAX;
-    }
-    return Math.max(...values);
-  }, [aggregateProducts, trueMaxPrice]);
+  }, [styleFilter, styleValues]);
 
   useEffect(()=>{
     if (typeof window === 'undefined') return;
@@ -267,99 +365,50 @@ useEffect(()=>{
     };
   }, []);
 
-  // Fetch true max price using lightweight price-stats endpoint
-  // This runs once on mount and uses localStorage cache to avoid repeated calls
-  // The price range will be initialized by the useEffect below when trueMaxPrice is set
   useEffect(()=>{
-    if (maxPriceBootstrapRef.current) return; // Only run once
-    maxPriceBootstrapRef.current = true;
-    
-    // Check localStorage cache first (24 hour TTL)
-    const CACHE_KEY = 'ac_price_stats_cache';
-    const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
-    try {
-      const cached = localStorage.getItem(CACHE_KEY);
-      if (cached) {
-        const { max_price, timestamp } = JSON.parse(cached);
-        if (timestamp && Date.now() - timestamp < CACHE_TTL && max_price > 0) {
-          setTrueMaxPrice(max_price);
-          return; // Use cached value, no API call needed
-        }
-      }
-    } catch (err) {
-      // Invalid cache, continue to fetch
-    }
-    
-    // Fetch price stats from backend (single lightweight API call)
-    (async ()=>{
-      try {
-        const stats = await getPriceStats();
-        const maxPrice = stats.max_price || FALLBACK_PRICE_MAX;
-        
-        // Cache the result
-        try {
-          localStorage.setItem(CACHE_KEY, JSON.stringify({
-            max_price: maxPrice,
-            timestamp: Date.now()
-          }));
-        } catch (err) {
-          // localStorage might be full, continue anyway
-        }
-        
-        setTrueMaxPrice(maxPrice);
-      } catch (err) {
-        console.warn('Failed to fetch price stats, using fallback', err);
-        // On error, use fallback - the useEffect below will initialize price range
-        setTrueMaxPrice(FALLBACK_PRICE_MAX);
-      }
-    })();
-  }, []);
+    const fallbackMin = Math.max(0, fallbackPriceStats.min || 0);
+    const fallbackMax = Math.max(fallbackMin, fallbackPriceStats.max || FALLBACK_PRICE_MAX);
+    const facetMin = Number.isFinite(facetMeta?.min_price) ? Math.max(0, facetMeta.min_price) : null;
+    const facetMax = Number.isFinite(facetMeta?.max_price) ? Math.max(0, facetMeta.max_price) : null;
+    const min = facetMin ?? fallbackMin;
+    const rawMax = facetMax ?? fallbackMax;
+    const maxCandidate = Math.max(min, rawMax);
 
-  // Initialize price range once we have the true max price from the backend
-  // This prevents the price range from being set too low based on limited initial products
-  useEffect(()=>{
-    // Wait for trueMaxPrice to be fetched from backend (or cache)
-    if (trueMaxPrice !== null) {
-      setPriceRange(prev => {
-        // Initialize with true max if not yet initialized
-        if (!priceRangeInitializedRef.current) {
-          priceRangeInitializedRef.current = true;
-          return [0, trueMaxPrice];
-        }
-        // After initialization, only increase max if we discover a higher price
-        // Never decrease it - ensures customers always see all products
-        if (prev[1] < trueMaxPrice) {
-          return [prev[0], trueMaxPrice];
-        }
-        return prev;
-      });
-      return;
-    }
-    
-    // While price stats are being fetched, don't initialize price range from aggregateProducts
-    // This prevents setting a lower max based on the first page of products
-    if (maxPriceBootstrapRef.current) {
-      // Price stats fetch is in progress - wait for it
-      return;
-    }
-    
-    // Fallback: if price stats fetch failed or didn't run, use calculated max from products
-    // This should only happen in edge cases (network error, etc.)
-    if (aggregateProducts.length === 0) return;
-    
-    const effectiveMax = priceSliderMax;
+    setPriceLimits({ min, max: maxCandidate });
     setPriceRange(prev => {
-      if (!priceRangeInitializedRef.current) {
+      if (!priceRangeInitializedRef.current){
         priceRangeInitializedRef.current = true;
-        return [0, effectiveMax];
+        return [min, maxCandidate];
       }
-      // Only increase, never decrease
-      if (prev[1] < effectiveMax) {
-        return [prev[0], effectiveMax];
+      if (!priceRangeTouched){
+        if (prev[0] === min && prev[1] === maxCandidate) return prev;
+        return [min, maxCandidate];
+      }
+      const clampedMin = Math.min(Math.max(prev[0], min), maxCandidate);
+      const clampedMax = Math.min(Math.max(prev[1], min), maxCandidate);
+      if (clampedMin !== prev[0] || clampedMax !== prev[1]){
+        return [clampedMin, clampedMax];
       }
       return prev;
     });
-  }, [priceSliderMax, aggregateProducts.length, trueMaxPrice]);
+  }, [facetMeta, fallbackPriceStats, priceRangeTouched]);
+
+  const handlePriceRangeChange = useCallback((value)=>{
+    const [nextMin, nextMax] = value;
+    const isFullRange = nextMin <= priceLimits.min && nextMax >= priceLimits.max;
+    setPriceRangeTouched(!isFullRange);
+    setPriceRange([nextMin, nextMax]);
+  }, [priceLimits.min, priceLimits.max]);
+
+  const resetFilters = useCallback(()=>{
+    setCat("All");
+    setStyleFilter("All");
+    setHideUnavailable(false);
+    setQ("");
+    setQInput("");
+    setPriceRange([priceLimits.min, priceLimits.max]);
+    setPriceRangeTouched(false);
+  }, [priceLimits.min, priceLimits.max]);
 
   const filtered = catalog.filter(p => {
     const isAvailable = (p.available && (p.qty||0) > 0);
@@ -380,7 +429,8 @@ useEffect(()=>{
     setCatalog([]);
     setTotal(0);
     setNextOffset(0);
-  }, [cat, priceRange, q, hideUnavailable, styleFilter, pageSettings.initial]);
+    setLoading(true);
+  }, [cat, priceRange[0], priceRange[1], q, hideUnavailable, styleFilter, pageSettings.initial]);
 
   // Fetch page function
   async function fetchPage(limit, offset){
@@ -880,21 +930,35 @@ useEffect(()=>{
           </DialogHeader>
           <div className="space-y-4">
             <div>
-              <Label>Category</Label>
+              <Label className="flex items-center gap-2">
+                Category
+                {facetLoading && <Loader2 className="h-3 w-3 animate-spin text-neutral-400" />}
+              </Label>
               <Select value={cat} onValueChange={setCat}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {cats.map(c=> <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  <SelectItem value="All">All</SelectItem>
+                  {categoryOptions.map(option => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.value} <span className="text-xs text-neutral-500">({option.count})</span>
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label>Jewellery Style</Label>
+              <Label className="flex items-center gap-2">
+                Jewellery Style
+                {facetLoading && <Loader2 className="h-3 w-3 animate-spin text-neutral-400" />}
+              </Label>
               <Select value={styleFilter} onValueChange={setStyleFilter}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {styleOptions.map(style=> (
-                    <SelectItem key={style} value={style}>{style}</SelectItem>
+                  <SelectItem value="All">All</SelectItem>
+                  {styleEntries.map(option => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.value} <span className="text-xs text-neutral-500">({option.count})</span>
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -902,7 +966,7 @@ useEffect(()=>{
             <div>
               <Label>Price Range</Label>
               <div className="py-2">
-                <Slider value={priceRange} onValueChange={setPriceRange} min={0} max={priceSliderMax} step={100} />
+                <Slider value={priceRange} onValueChange={handlePriceRangeChange} min={priceLimits.min} max={priceLimits.max} step={100} />
                 <div className="text-sm text-neutral-600 mt-2">{fmt(priceRange[0])} – {fmt(priceRange[1])}</div>
               </div>
             </div>
@@ -910,9 +974,14 @@ useEffect(()=>{
               <Label>Hide unavailable</Label>
               <Switch checked={hideUnavailable} onCheckedChange={setHideUnavailable} />
             </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <Button variant="outline" onClick={()=>setFilterOpen(false)}>Close</Button>
-              <Button onClick={()=>setFilterOpen(false)}>Apply</Button>
+            <div className="flex justify-between gap-3 pt-2">
+              <Button variant="outline" className="text-xs uppercase tracking-wide" onClick={resetFilters}>
+                Reset Filters
+              </Button>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={()=>setFilterOpen(false)}>Close</Button>
+                <Button onClick={()=>setFilterOpen(false)}>Apply</Button>
+              </div>
             </div>
           </div>
         </DialogContent>

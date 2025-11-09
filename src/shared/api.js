@@ -53,9 +53,17 @@ export async function getConfig(){
   return await r.json();
 }
 
-export async function getPriceStats(){
-  const r = await apiFetch(`${API_BASE}/products/price-stats`);
-  if (!r.ok) throw new Error("load price stats failed");
+export async function getProductFilters(params = {}){
+  const baseUrl = API_BASE
+    ? new URL(`${API_BASE}/products/filters`)
+    : new URL('/products/filters', window.location.origin);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    baseUrl.searchParams.set(key, String(value));
+  });
+  const target = API_BASE ? baseUrl.toString() : baseUrl.toString().replace(window.location.origin, '');
+  const r = await apiFetch(target);
+  if (!r.ok) throw new Error("load filters failed");
   return await r.json();
 }
 
