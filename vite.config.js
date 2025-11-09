@@ -10,6 +10,7 @@ export default defineConfig({
     allowedHosts: true,   // disable host check (or list specific hosts)
     proxy: {
       // Proxy API calls to FastAPI backend running on localhost:8000
+      // '/products' matches all /products/* paths including /products/price-stats, /products/{id}/images, etc.
       '/products':        { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/orders':          { target: 'http://127.0.0.1:8000', changeOrigin: true },
       '/owner/products':  { target: 'http://127.0.0.1:8000', changeOrigin: true },

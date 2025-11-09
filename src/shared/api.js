@@ -53,6 +53,12 @@ export async function getConfig(){
   return await r.json();
 }
 
+export async function getPriceStats(){
+  const r = await apiFetch(`${API_BASE}/products/price-stats`);
+  if (!r.ok) throw new Error("load price stats failed");
+  return await r.json();
+}
+
 export async function listProducts(){
   const r = await apiFetch(`${API_BASE}/products`);
   if (!r.ok) throw new Error("load products failed");

@@ -16,7 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import { ShoppingCart, Filter, Image as ImageIcon, X, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
-import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, notifyOwnerByEmail, listProductsPaged, getProductImages, getOrdersBySession, getCart, syncCart, trackEvent, normalizeStyleTag, JEWELLERY_STYLE_OPTIONS } from "../../shared";
+import { fmt, waLink, createOrder as apiCreateOrder, BRAND_NAME, notifyOwnerByEmail, listProductsPaged, getProductImages, getOrdersBySession, getCart, syncCart, trackEvent, normalizeStyleTag, JEWELLERY_STYLE_OPTIONS, getPriceStats } from "../../shared";
 // ShortlistSheet not used in full-screen view anymore
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 const ORDER_BANNER_DISMISS_KEY = "ac_order_banner_dismissed";
@@ -82,6 +82,8 @@ export default function ShopView({ products, onOrderCreate, ownerPhone, isLoadin
   const fetchedIdsRef = useRef(new Set());
   const cacheHydratedRef = useRef(false);
   const priceRangeInitializedRef = useRef(false);
+  const maxPriceBootstrapRef = useRef(false); // Track if we've fetched true max price
+  const [trueMaxPrice, setTrueMaxPrice] = useState(null); // Store the true max from all products
   // Throttle gallery hydration so mobile networks do not get flooded by simultaneous image calls.
   // We assign simple priority buckets so the active card is hydrated first, then in-viewport items,
   // finally background rows that the user may never see.
@@ -239,12 +241,16 @@ useEffect(()=>{
   }, [styleOptions, styleFilter]);
 
   const priceSliderMax = useMemo(()=>{
+    // Use trueMaxPrice if available (from unfiltered bootstrap), otherwise calculate from current products
+    if (trueMaxPrice !== null) {
+      return trueMaxPrice;
+    }
     const values = aggregateProducts.map(p=>Number(p?.price)||0).filter(Boolean);
     if (values.length === 0) {
       return FALLBACK_PRICE_MAX;
     }
     return Math.max(...values);
-  }, [aggregateProducts]);
+  }, [aggregateProducts, trueMaxPrice]);
 
   useEffect(()=>{
     if (typeof window === 'undefined') return;
@@ -261,26 +267,99 @@ useEffect(()=>{
     };
   }, []);
 
+  // Fetch true max price using lightweight price-stats endpoint
+  // This runs once on mount and uses localStorage cache to avoid repeated calls
+  // The price range will be initialized by the useEffect below when trueMaxPrice is set
   useEffect(()=>{
-    if (aggregateProducts.length === 0) return;
-    setPriceRange(prev=>{
-      const upperWasFallback = prev[1] === DEFAULT_PRICE_UPPER || prev[1] === FALLBACK_PRICE_MAX;
-      if (!priceRangeInitializedRef.current){
-        priceRangeInitializedRef.current = true;
-        if (!upperWasFallback && prev[1] === priceSliderMax && prev[0] === 0) {
-          return prev;
+    if (maxPriceBootstrapRef.current) return; // Only run once
+    maxPriceBootstrapRef.current = true;
+    
+    // Check localStorage cache first (24 hour TTL)
+    const CACHE_KEY = 'ac_price_stats_cache';
+    const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) {
+        const { max_price, timestamp } = JSON.parse(cached);
+        if (timestamp && Date.now() - timestamp < CACHE_TTL && max_price > 0) {
+          setTrueMaxPrice(max_price);
+          return; // Use cached value, no API call needed
         }
-        return [0, priceSliderMax];
       }
-      if (prev[1] > priceSliderMax){
-        return [Math.min(prev[0], priceSliderMax), priceSliderMax];
+    } catch (err) {
+      // Invalid cache, continue to fetch
+    }
+    
+    // Fetch price stats from backend (single lightweight API call)
+    (async ()=>{
+      try {
+        const stats = await getPriceStats();
+        const maxPrice = stats.max_price || FALLBACK_PRICE_MAX;
+        
+        // Cache the result
+        try {
+          localStorage.setItem(CACHE_KEY, JSON.stringify({
+            max_price: maxPrice,
+            timestamp: Date.now()
+          }));
+        } catch (err) {
+          // localStorage might be full, continue anyway
+        }
+        
+        setTrueMaxPrice(maxPrice);
+      } catch (err) {
+        console.warn('Failed to fetch price stats, using fallback', err);
+        // On error, use fallback - the useEffect below will initialize price range
+        setTrueMaxPrice(FALLBACK_PRICE_MAX);
       }
-      if (upperWasFallback && prev[1] !== priceSliderMax){
-        return [Math.min(prev[0], priceSliderMax), priceSliderMax];
+    })();
+  }, []);
+
+  // Initialize price range once we have the true max price from the backend
+  // This prevents the price range from being set too low based on limited initial products
+  useEffect(()=>{
+    // Wait for trueMaxPrice to be fetched from backend (or cache)
+    if (trueMaxPrice !== null) {
+      setPriceRange(prev => {
+        // Initialize with true max if not yet initialized
+        if (!priceRangeInitializedRef.current) {
+          priceRangeInitializedRef.current = true;
+          return [0, trueMaxPrice];
+        }
+        // After initialization, only increase max if we discover a higher price
+        // Never decrease it - ensures customers always see all products
+        if (prev[1] < trueMaxPrice) {
+          return [prev[0], trueMaxPrice];
+        }
+        return prev;
+      });
+      return;
+    }
+    
+    // While price stats are being fetched, don't initialize price range from aggregateProducts
+    // This prevents setting a lower max based on the first page of products
+    if (maxPriceBootstrapRef.current) {
+      // Price stats fetch is in progress - wait for it
+      return;
+    }
+    
+    // Fallback: if price stats fetch failed or didn't run, use calculated max from products
+    // This should only happen in edge cases (network error, etc.)
+    if (aggregateProducts.length === 0) return;
+    
+    const effectiveMax = priceSliderMax;
+    setPriceRange(prev => {
+      if (!priceRangeInitializedRef.current) {
+        priceRangeInitializedRef.current = true;
+        return [0, effectiveMax];
+      }
+      // Only increase, never decrease
+      if (prev[1] < effectiveMax) {
+        return [prev[0], effectiveMax];
       }
       return prev;
     });
-  }, [priceSliderMax, aggregateProducts.length]);
+  }, [priceSliderMax, aggregateProducts.length, trueMaxPrice]);
 
   const filtered = catalog.filter(p => {
     const isAvailable = (p.available && (p.qty||0) > 0);
